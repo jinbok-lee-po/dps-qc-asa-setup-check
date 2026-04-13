@@ -1,5 +1,5 @@
 (() => {
-  const VERSION = "0.3.2";
+  const VERSION = "0.3.3";
   const POLL_MS = 600;
   const MAX_MS = 45000;
   const NAV_SETTLE_MS = 400;
@@ -48,7 +48,8 @@
         return {
           ok: true,
           count: tokens.length,
-          detail: `Clause/Values UI — vendor id ${tokens.length}개`,
+          ids: tokens,
+          detail: `Clause/Values UI — vendor id ${tokens.length}개: ${tokens.join(", ")}`,
         };
       }
     }
@@ -110,13 +111,23 @@
     const re = /vendor\s*ids[\s\S]{0,400}?\bis\b/i;
     const m = fromVendorGroupFilters.match(re);
     if (!m || m.index == null) {
-      return { ok: false, count: null, detail: '"Vendor ids" · "is" 패턴을 찾지 못했습니다.' };
+      return {
+        ok: false,
+        count: null,
+        ids: null,
+        detail: '"Vendor ids" · "is" 패턴을 찾지 못했습니다.',
+      };
     }
     const afterIs = fromVendorGroupFilters.slice(m.index + m[0].length);
     const stop = afterIs.search(NEXT_FILTER_AFTER_VALUE);
     const raw = (stop === -1 ? afterIs : afterIs.slice(0, stop)).trim();
     if (!raw) {
-      return { ok: true, count: 0, detail: "Vendor ids is 다음에 값이 없습니다 (0개)." };
+      return {
+        ok: true,
+        count: 0,
+        ids: [],
+        detail: "Vendor ids is 다음에 값이 없습니다 (0개).",
+      };
     }
     const parts = raw
       .split(/[,\n]+/)
@@ -125,7 +136,8 @@
     return {
       ok: true,
       count: parts.length,
-      detail: `Vendor ids is 다음 vendor id(그룹) 개수: ${parts.length}개`,
+      ids: parts,
+      detail: `Vendor ids is 다음 vendor id(그룹) 개수: ${parts.length}개: ${parts.join(", ")}`,
     };
   }
 
@@ -183,6 +195,7 @@
       vendorIds: {
         ok: vendorIds.ok,
         count: vendorIds.count,
+        ids: vendorIds.ids,
         detail: vendorIds.detail,
       },
       deliveryTypesPlatform: { ok: deliveryOk, detail: deliveryDetail },
@@ -342,7 +355,7 @@
     const lines = [];
     lines.push("=== Vendor group filters 검증 ===");
     lines.push(
-      "(1) shop(Vertical) (2) vendor id 개수 (3) PLATFORM_DELIVERY — Clause/Values UI 또는 레거시 라벨"
+      "(1) shop (2) vendor id 개수·목록 (3) PLATFORM_DELIVERY — Clause/Values UI 또는 레거시 라벨"
     );
     lines.push("");
     for (const r of results) {
@@ -360,6 +373,12 @@
         lines.push(
           `  · vendorIds\t${c.vendorIds.ok ? "OK" : "NG"}\t${c.vendorIds.detail}`
         );
+        {
+          const vid = c.vendorIds.ids;
+          const listStr =
+            vid == null ? "(미수집)" : vid.length === 0 ? "(0개)" : vid.join(", ");
+          lines.push(`  · vendorId목록\t${listStr}`);
+        }
         lines.push(
           `  · delivery\t${c.deliveryTypesPlatform.ok ? "OK" : "NG"}\t${c.deliveryTypesPlatform.detail}`
         );
@@ -408,7 +427,7 @@
         <div class="dps-meta">
           <strong>검증 항목 (Vendor Group Filters, iframe innerText)</strong>
           <ul>
-            <li><strong>Clause/Values UI</strong>: 첫 <code>Values</code> 블록에 숫자만 있으면 그 개수 = vendor id 개수</li>
+            <li><strong>Clause/Values UI</strong>: 첫 숫자-only <code>Values</code> 블록 → vendor id <strong>개수·목록</strong> (리포트에 쉼표 구분)</li>
             <li>어느 <code>Values</code> 블록이든 내용이 <strong>shop</strong> 이면 Vertical 통과</li>
             <li><strong>PLATFORM_DELIVERY</strong> 블록이 있으면 Delivery 통과 (레거시 영문 라벨 UI도 지원)</li>
           </ul>

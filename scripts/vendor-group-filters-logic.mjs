@@ -51,7 +51,8 @@ function vendorIdsFromClauseValuesBlocks(blocks) {
       return {
         ok: true,
         count: tokens.length,
-        detail: `Clause/Values UI — vendor id ${tokens.length}개`,
+        ids: tokens,
+        detail: `Clause/Values UI — vendor id ${tokens.length}개: ${tokens.join(", ")}`,
       };
     }
   }
@@ -109,13 +110,23 @@ function parseVendorIdsCountAfterIs(fromVendorGroupFilters) {
   const re = /vendor\s*ids[\s\S]{0,400}?\bis\b/i;
   const m = fromVendorGroupFilters.match(re);
   if (!m || m.index == null) {
-    return { ok: false, count: null, detail: '"Vendor ids" · "is" 패턴을 찾지 못했습니다.' };
+    return {
+      ok: false,
+      count: null,
+      ids: null,
+      detail: '"Vendor ids" · "is" 패턴을 찾지 못했습니다.',
+    };
   }
   const afterIs = fromVendorGroupFilters.slice(m.index + m[0].length);
   const stop = afterIs.search(NEXT_FILTER_AFTER_VALUE);
   const raw = (stop === -1 ? afterIs : afterIs.slice(0, stop)).trim();
   if (!raw) {
-    return { ok: true, count: 0, detail: "Vendor ids is 다음에 값이 없습니다 (0개)." };
+    return {
+      ok: true,
+      count: 0,
+      ids: [],
+      detail: "Vendor ids is 다음에 값이 없습니다 (0개).",
+    };
   }
   const parts = raw
     .split(/[,\n]+/)
@@ -124,7 +135,8 @@ function parseVendorIdsCountAfterIs(fromVendorGroupFilters) {
   return {
     ok: true,
     count: parts.length,
-    detail: `Vendor ids is 다음 vendor id(그룹) 개수: ${parts.length}개`,
+    ids: parts,
+    detail: `Vendor ids is 다음 vendor id(그룹) 개수: ${parts.length}개: ${parts.join(", ")}`,
   };
 }
 
@@ -179,6 +191,7 @@ export function validateVendorGroupFilters(iframeText) {
     vendorIds: {
       ok: vendorIds.ok,
       count: vendorIds.count,
+      ids: vendorIds.ids,
       detail: vendorIds.detail,
     },
     deliveryTypesPlatform: { ok: deliveryOk, detail: deliveryDetail },

@@ -72,6 +72,10 @@ console.log("test-vendor-group-filters.mjs\n");
 let r = validateVendorGroupFilters(PORTAL_CLAUSE_VALUES_SAMPLE);
 assert(r.ok === true, "portal Clause/Values sample should pass");
 assert(r.checks.vendorIds.count === 2, "portal vendor id count 2");
+assert(
+  JSON.stringify(r.checks.vendorIds.ids) === JSON.stringify(["99999999", "99999998"]),
+  "portal vendor id list"
+);
 assert(r.checks.deliveryTypesPlatform.ok === true, "portal PLATFORM_DELIVERY");
 assert(r.checks.verticalTypeShop.ok === true, "portal shop");
 console.log("OK: 포털 Clause/Values 실제 샘플 전체 통과");
@@ -79,6 +83,7 @@ console.log("OK: 포털 Clause/Values 실제 샘플 전체 통과");
 r = validateVendorGroupFilters(fullMock);
 assert(r.ok === true, "full mock should pass");
 assert(r.checks.vendorIds.count === 3, "vendor id count 3");
+assert(r.checks.vendorIds.ids.length === 3, "legacy vendor id list length");
 console.log("OK: 전체 통과 목, vendorIds=3");
 
 r = validateVendorGroupFilters("Vendor group filters\nVendor ids\nis\na\nb\nDelivery types\nis\nPLATFORM_DELIVERY\nVertical type\nis\nshop");
