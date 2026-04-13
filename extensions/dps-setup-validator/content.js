@@ -7,6 +7,7 @@
   const ORIGIN = "https://portal.woowahan.com";
   const COMMERCE_HASH_PREFIX = "#/automatic-assignment";
 
+  /** 검증 규칙은 scripts/vendor-group-filters-logic.mjs 와 동기화 */
   const VENDOR_GROUP_MARK = /vendor\s+group\s+filters/i;
   const VERTICAL_TYPE_IS_SHOP = /vertical\s*type[\s\S]{0,500}?\bis\b[\s\S]{0,240}?\bshop\b/i;
   const DELIVERY_TYPES_IS_PLATFORM = /delivery\s*types[\s\S]{0,400}?\bis\b[\s\S]{0,320}?\bPLATFORM_DELIVERY\b/i;

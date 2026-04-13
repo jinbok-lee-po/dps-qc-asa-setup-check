@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 /**
- * DPS 커머스 운영안 — CDP 스크립트
+ * 레거시 파일명 유지. 커머스 Vendor group filters CDP 검증은 아래를 사용하세요.
  *
- * 현재 검수는 크롬 익스텐션(content.js)에서 iframe 텍스트로 수행합니다.
- * 이 파일은 자리 표시용이며, 추후 CDP로 동일 검증을 자동화할 때 확장하세요.
+ *   node scripts/run-vendor-group-cdp.mjs <실험ID> [--target <cdp-target-prefix>]
+ *
+ * 단위 테스트:
+ *   node scripts/test-vendor-group-filters.mjs
  */
 
-console.log(
-  "커머스 검수(Vertical type is shop 등)는 익스텐션 패널에서 실행하세요. CDP 스크립트는 아직 연결되지 않았습니다."
-);
+console.error("이 스크립트는 사용하지 않습니다. 대신:\n  node scripts/run-vendor-group-cdp.mjs <실험ID>\n");
+process.exit(2);
