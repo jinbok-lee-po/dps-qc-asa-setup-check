@@ -1,5 +1,5 @@
 (() => {
-  const VERSION = "1.1.1";
+  const VERSION = "0.1.0";
   const POLL_MS = 600;
   /** 실험당 iframe 로딩·라우트 반영 대기 상한 (ms) */
   const MAX_MS = 45000;

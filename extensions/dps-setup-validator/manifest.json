@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "DPS 커머스 운영안 검증",
-  "version": "1.1.1",
+  "version": "0.1.0",
   "description": "Woowa Portal DPS 커머스 운영안 실험의 Target Zones 등 설정을 검증합니다.",
   "content_scripts": [
     {
