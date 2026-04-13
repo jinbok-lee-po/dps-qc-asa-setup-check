@@ -29,8 +29,8 @@ const PROJECT_ROOT = join(__dirname, "..");
 const ZONE_REFERENCE_PATH = join(PROJECT_ROOT, "extensions/dps-setup-validator/reference-zones.json");
 /** Select Target Customers → Parent Verticals 기대값 (대소문자 무시) */
 const EXPECTED_PARENT_VERTICAL = "commerce";
-/** 포털 실험 라우트 세그먼트 (익스텐션 content.js 와 동일) */
-const EXPERIMENT_ROUTE_SEGMENT = "commerce";
+/** 커머스 DPS automatic-assignment 해시 (익스텐션 COMMERCE_HASH_PREFIX 와 동일) */
+const AUTOMATIC_ASSIGNMENT_HASH_PREFIX = "#/automatic-assignment";
 
 function loadZoneReference() {
   if (!existsSync(ZONE_REFERENCE_PATH)) {
@@ -183,7 +183,7 @@ function extractZonesJsForExperiment(expectedId) {
     } catch (e) {
       return JSON.stringify({ ok: false, error: "cannot read iframe location: " + e });
     }
-    const m = href.match(/\\/commerce\\/(\\d+)\\/edit(?:[?#]|$)/);
+    const m = href.match(/automatic-assignment\\/(\\d+)\\/edit(?:[?#]|$)/i);
     const current = m ? m[1] : null;
     if (current !== expected) {
       return JSON.stringify({
@@ -256,7 +256,7 @@ function extractZonesJsForExperiment(expectedId) {
  * iframe.contentWindow.location 을 실험 edit URL 로 맞춘다.
  */
 function navPluginIframeToEditJs(experimentId) {
-  const hash = `#/experiments/${EXPERIMENT_ROUTE_SEGMENT}/${experimentId}/edit`;
+  const hash = `${AUTOMATIC_ASSIGNMENT_HASH_PREFIX}/${experimentId}/edit`;
   return `(() => {
     const base = "https://portal.woowahan.com/pv2/kr/p/logistics-dynamic-pricing";
     const hash = ${JSON.stringify(hash)};
@@ -300,7 +300,7 @@ function sleepSync(ms) {
  */
 function fetchZonesForExperiment(cdpRoot, targetPrefix, experimentId) {
   const id = String(experimentId);
-  const url = `https://portal.woowahan.com/pv2/kr/p/logistics-dynamic-pricing#/experiments/${EXPERIMENT_ROUTE_SEGMENT}/${id}/edit`;
+  const url = `https://portal.woowahan.com/pv2/kr/p/logistics-dynamic-pricing${AUTOMATIC_ASSIGNMENT_HASH_PREFIX}/${id}/edit`;
   runCdp(cdpRoot, ["nav", targetPrefix, url]);
   parseIframeNavResult(runCdp(cdpRoot, ["eval", targetPrefix, navPluginIframeToEditJs(id)]));
   const settleMs = Number(process.env.DPS_ZONES_NAV_SETTLE_MS) || 400;

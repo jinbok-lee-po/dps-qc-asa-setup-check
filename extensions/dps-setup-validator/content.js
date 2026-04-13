@@ -6,10 +6,8 @@
   const NAV_SETTLE_MS = 400;
   const BASE_PATH = "/pv2/kr/p/logistics-dynamic-pricing";
   const ORIGIN = "https://portal.woowahan.com";
-  /** 실행창·FAB 노출: 커머스 실험 목록 또는 그 하위(…/id/edit, …/clone 등) (쿼리 제외, 끝 슬래시 정규화) */
-  const COMMERCE_HASH_PREFIX = "#/experiments/commerce";
-  /** iframe·히스토리 동기화 URL 세그먼트 (포털 라우트와 일치해야 함) */
-  const EXPERIMENT_ROUTE_SEGMENT = "commerce";
+  /** 실행창·FAB 노출: automatic-assignment 및 하위(…/id/edit 등) (쿼리 제외, 끝 슬래시 정규화) */
+  const COMMERCE_HASH_PREFIX = "#/automatic-assignment";
   /** Select Target Customers → Parent Verticals 기대값 (대소문자 무시) */
   const EXPECTED_PARENT_VERTICAL = "commerce";
 
@@ -129,7 +127,7 @@
     } catch {
       return null;
     }
-    const m = href.match(new RegExp(`/${EXPERIMENT_ROUTE_SEGMENT}/(\\d+)/edit(?:[?#]|$)`));
+    const m = href.match(/automatic-assignment\/(\d+)\/edit(?:[?#]|$)/i);
     return m ? m[1] : null;
   }
 
@@ -139,7 +137,7 @@
 
   function navIframeToEdit(experimentId) {
     const id = String(experimentId);
-    const hash = `#/experiments/${EXPERIMENT_ROUTE_SEGMENT}/${id}/edit`;
+    const hash = `#/automatic-assignment/${id}/edit`;
     const f = document.querySelector("iframe.pluginIframe");
     if (!f || !f.contentWindow) return { ok: false, error: "no iframe.pluginIframe" };
     try {
@@ -152,7 +150,7 @@
 
   function syncTopLocationToEdit(experimentId) {
     const id = String(experimentId);
-    const hash = `#/experiments/${EXPERIMENT_ROUTE_SEGMENT}/${id}/edit`;
+    const hash = `#/automatic-assignment/${id}/edit`;
     const path = window.location.pathname.split("?")[0];
     const next = `${window.location.origin}${path}${hash}`;
     try {
@@ -459,7 +457,7 @@
         alert(
           "DPS 커머스 운영안 실험 화면에서만 사용할 수 있습니다.\n\n" +
             `예: ${ORIGIN}${BASE_PATH}${COMMERCE_HASH_PREFIX}\n` +
-            `또는 ${ORIGIN}${BASE_PATH}#/experiments/commerce/… (edit·clone 등)`
+            `또는 ${ORIGIN}${BASE_PATH}#/automatic-assignment/… (edit·clone 등)`
         );
         return;
       }
