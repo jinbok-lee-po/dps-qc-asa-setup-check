@@ -5,6 +5,48 @@
 
 import { validateVendorGroupFilters } from "./vendor-group-filters-logic.mjs";
 
+/** 포털 실제 innerText 샘플 (Clause / Values) */
+const PORTAL_CLAUSE_VALUES_SAMPLE = `Vendor Group Filters
+Add Filter
+Filter
+Filter
+Clause
+is
+Clause
+Values
+99999999
+99999998
+Values
+
+Top 50 items shown in the dropdown (search for more); refresh if items missing.
+
+Filter
+Filter
+Clause
+is
+Clause
+Values
+shop
+Values
+Filter
+Filter
+Clause
+is
+Clause
+Values
+PLATFORM_DELIVERY
+Values
+Filter
+Filter
+Clause
+is
+Clause
+Values
+딜리버리왕국 - 99
+Values
+Show Number Of Vendors
+`;
+
 function assert(cond, msg) {
   if (!cond) {
     console.error("FAIL:", msg);
@@ -27,7 +69,14 @@ shop
 
 console.log("test-vendor-group-filters.mjs\n");
 
-let r = validateVendorGroupFilters(fullMock);
+let r = validateVendorGroupFilters(PORTAL_CLAUSE_VALUES_SAMPLE);
+assert(r.ok === true, "portal Clause/Values sample should pass");
+assert(r.checks.vendorIds.count === 2, "portal vendor id count 2");
+assert(r.checks.deliveryTypesPlatform.ok === true, "portal PLATFORM_DELIVERY");
+assert(r.checks.verticalTypeShop.ok === true, "portal shop");
+console.log("OK: 포털 Clause/Values 실제 샘플 전체 통과");
+
+r = validateVendorGroupFilters(fullMock);
 assert(r.ok === true, "full mock should pass");
 assert(r.checks.vendorIds.count === 3, "vendor id count 3");
 console.log("OK: 전체 통과 목, vendorIds=3");
