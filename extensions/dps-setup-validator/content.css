@@ -1,4 +1,4 @@
-/* DPS 커머스 운영안 검증 — 패널만 포인터를 받고, 나머지 페이지는 그대로 클릭 가능 (ASA 봇과 DOM id 충돌 방지) */
+/* DPS 커머스 운영안 검증 — 패널만 포인터를 받고, 나머지 페이지는 그대로 클릭 가능 */
 #dps-commerce-validator-root {
   all: initial;
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans KR", sans-serif;
@@ -48,14 +48,13 @@
   outline-offset: 2px;
 }
 
-/* 전체 화면 dim 없음 — 크롬·포털 UI는 항상 그대로 조작 가능 */
 #dps-commerce-validator-panel-wrap {
   position: fixed;
   right: 16px;
   top: 72px;
   bottom: 72px;
-  width: min(560px, calc(100vw - 32px));
-  max-height: min(calc(100vh - 144px), 720px);
+  width: min(400px, calc(100vw - 32px));
+  max-height: min(calc(100vh - 144px), 360px);
   z-index: 2147483647;
   pointer-events: auto;
   display: none;
@@ -117,121 +116,9 @@
   min-height: 0;
 }
 
-#dps-commerce-validator-panel label.dps-label {
-  display: block;
-  font-weight: 600;
-  margin-bottom: 6px;
-  font-size: 13px;
-}
-
-#dps-commerce-validator-panel textarea#dps-commerce-ids-input {
-  width: 100%;
-  min-height: 72px;
-  padding: 10px 12px;
-  border: 1px solid #ced4da;
-  border-radius: 8px;
-  font-family: ui-monospace, monospace;
-  font-size: 13px;
-  resize: vertical;
-}
-
-#dps-commerce-validator-panel textarea#dps-commerce-ids-input:focus {
-  outline: none;
-  border-color: #0d6efd;
-  box-shadow: 0 0 0 3px rgba(13, 110, 253, 0.15);
-}
-
-#dps-commerce-validator-panel .dps-meta {
-  margin-top: 12px;
-  padding: 10px 12px;
-  background: #f8f9fa;
-  border-radius: 8px;
-  font-size: 12px;
-  color: #495057;
-}
-
-#dps-commerce-validator-panel .dps-ref-line {
-  margin: 0 0 10px;
-  font-weight: 600;
-  color: #212529;
-}
-
-#dps-commerce-validator-panel .dps-meta ul {
-  margin: 8px 0 0;
-  padding-left: 18px;
-}
-
-#dps-commerce-validator-panel .dps-actions {
-  margin-top: 14px;
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  align-items: center;
-}
-
-#dps-commerce-validator-panel button#dps-commerce-run {
-  padding: 10px 18px;
-  border: none;
-  border-radius: 8px;
-  background: #198754;
-  color: #fff;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-#dps-commerce-validator-panel button#dps-commerce-run:hover:not(:disabled) {
-  background: #157347;
-}
-
-#dps-commerce-validator-panel button#dps-commerce-run:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
-#dps-commerce-validator-panel .dps-complete {
-  display: none;
-  margin-top: 12px;
-  padding: 10px 12px;
-  background: #d1e7dd;
-  border: 1px solid #badbcc;
-  border-radius: 8px;
-  color: #0f5132;
-  font-size: 13px;
-  font-weight: 600;
-}
-
-#dps-commerce-validator-panel .dps-complete.dps-visible {
-  display: block;
-}
-
-#dps-commerce-validator-panel #dps-commerce-results {
-  margin-top: 12px;
-  padding-top: 14px;
-  border-top: 1px solid #e8e8e8;
-  font-size: 12px;
-  display: none;
-}
-
-#dps-commerce-validator-panel #dps-commerce-results.dps-visible {
-  display: block;
-}
-
-#dps-commerce-validator-panel #dps-commerce-results pre {
+#dps-commerce-validator-panel .dps-placeholder {
   margin: 0;
-  padding: 10px;
-  background: #212529;
-  color: #e9ecef;
-  border-radius: 8px;
-  overflow-x: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-size: 11px;
-  max-height: 240px;
-  overflow-y: auto;
-}
-
-#dps-commerce-validator-panel .dps-err {
-  color: #b02a37;
-  font-size: 13px;
-  margin-top: 8px;
+  font-size: 14px;
+  color: #495057;
+  line-height: 1.5;
 }

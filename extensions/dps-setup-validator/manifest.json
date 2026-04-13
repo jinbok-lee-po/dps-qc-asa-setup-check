@@ -2,19 +2,13 @@
   "manifest_version": 3,
   "name": "DPS 커머스 운영안 검증",
   "version": "0.1.0",
-  "description": "Woowa Portal DPS 커머스 운영안 실험의 Target Zones 등 설정을 검증합니다.",
+  "description": "Woowa Portal DPS 커머스 automatic-assignment 화면용 검수 도구(검수 항목은 추후 정의).",
   "content_scripts": [
     {
       "matches": ["https://portal.woowahan.com/*"],
       "js": ["content.js"],
       "css": ["content.css"],
       "run_at": "document_idle"
-    }
-  ],
-  "web_accessible_resources": [
-    {
-      "resources": ["reference-zones.json"],
-      "matches": ["https://portal.woowahan.com/*"]
     }
   ]
 }
