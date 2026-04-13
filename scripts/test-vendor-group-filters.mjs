@@ -42,6 +42,12 @@ assert(r.ok === false, "wrong delivery");
 assert(r.checks.deliveryTypesPlatform.ok === false, "delivery ng");
 console.log("OK: Delivery types 불통과(예상)");
 
+r = validateVendorGroupFilters(
+  "Vendor group filters\nDelivery type\nis\nPLATFORM DELIVERY\nVertical type\nis\nshop\nVendor ids\nis\n1"
+);
+assert(r.ok === true, "Delivery type singular + PLATFORM DELIVERY with space");
+console.log("OK: Delivery type + PLATFORM DELIVERY(공백)");
+
 r = validateVendorGroupFilters(fullMock.replace("shop", "mart"));
 assert(r.ok === false, "wrong vertical");
 console.log("OK: Vertical type 불통과(예상)");

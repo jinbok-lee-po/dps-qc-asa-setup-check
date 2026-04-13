@@ -1,5 +1,5 @@
 (() => {
-  const VERSION = "0.3.0";
+  const VERSION = "0.3.1";
   const POLL_MS = 600;
   const MAX_MS = 45000;
   const NAV_SETTLE_MS = 400;
@@ -10,9 +10,42 @@
   /** 검증 규칙은 scripts/vendor-group-filters-logic.mjs 와 동기화 */
   const VENDOR_GROUP_MARK = /vendor\s+group\s+filters/i;
   const VERTICAL_TYPE_IS_SHOP = /vertical\s*type[\s\S]{0,500}?\bis\b[\s\S]{0,240}?\bshop\b/i;
-  const DELIVERY_TYPES_IS_PLATFORM = /delivery\s*types[\s\S]{0,400}?\bis\b[\s\S]{0,320}?\bPLATFORM_DELIVERY\b/i;
+  const DELIVERY_TYPES_LABEL = /delivery\s+types?\b/i;
+  const PLATFORM_DELIVERY_VALUE = /\bPLATFORM[\s_-]+DELIVERY\b/i;
   /** Vendor ids … is 다음 값 덩어리 끝: 다음 필터 라벨 또는 섹션 시작 전까지 */
-  const NEXT_FILTER_AFTER_VALUE = /\n\s*(?:Delivery types|Vertical type|Vendor ids|Add filter)\b/i;
+  const NEXT_FILTER_AFTER_VALUE = /\n\s*(?:Delivery types?|Vertical type|Vendor ids|Add filter)\b/i;
+
+  function checkDeliveryTypesPlatform(section) {
+    const labelM = section.match(DELIVERY_TYPES_LABEL);
+    if (!labelM || labelM.index == null) {
+      return {
+        ok: false,
+        detail:
+          'Vendor group filters 이후 "Delivery type" / "Delivery types" 라벨을 찾지 못했습니다.',
+      };
+    }
+    const fromLabel = section.slice(labelM.index);
+    const valueM = fromLabel.match(PLATFORM_DELIVERY_VALUE);
+    if (!valueM || valueM.index == null) {
+      return {
+        ok: false,
+        detail:
+          'Delivery types 근처에서 PLATFORM_DELIVERY(또는 PLATFORM DELIVERY / PLATFORM-DELIVERY) 값을 찾지 못했습니다.',
+      };
+    }
+    const betweenLabelAndValue = fromLabel.slice(labelM[0].length, valueM.index);
+    if (!/\bis\b/i.test(betweenLabelAndValue)) {
+      return {
+        ok: false,
+        detail:
+          'Delivery types 와 PLATFORM_DELIVERY 사이에 연산자 "is"가 없습니다.',
+      };
+    }
+    return {
+      ok: true,
+      detail: `Delivery types is ${valueM[0].trim()} 확인됨.`,
+    };
+  }
 
   function sliceVendorGroupFiltersSection(fullText) {
     const t = fullText || "";
@@ -76,10 +109,9 @@
 
     const vendorIds = parseVendorIdsCountAfterIs(section);
 
-    const deliveryOk = DELIVERY_TYPES_IS_PLATFORM.test(section);
-    const deliveryDetail = deliveryOk
-      ? 'Delivery types is PLATFORM_DELIVERY 확인됨.'
-      : 'Vendor group filters 이후 "Delivery types" · "is" · "PLATFORM_DELIVERY" 조합을 찾지 못했습니다.';
+    const delivery = checkDeliveryTypesPlatform(section);
+    const deliveryOk = delivery.ok;
+    const deliveryDetail = delivery.detail;
 
     const ok = verticalOk && vendorIds.ok && deliveryOk;
     const checks = {
@@ -312,7 +344,7 @@
           <ul>
             <li><strong>Vertical type</strong> · <strong>is</strong> · <strong>shop</strong></li>
             <li><strong>Vendor ids</strong> · <strong>is</strong> 다음에 나오는 값을 쉼표·줄바꿈으로 나눈 <strong>개수</strong> (리포트에 표시)</li>
-            <li><strong>Delivery types</strong> · <strong>is</strong> · <strong>PLATFORM_DELIVERY</strong></li>
+            <li><strong>Delivery type(s)</strong> · <strong>is</strong> · <strong>PLATFORM_DELIVERY</strong> (공백·하이픈 구분 표기도 인식)</li>
           </ul>
         </div>
         <div class="dps-actions">

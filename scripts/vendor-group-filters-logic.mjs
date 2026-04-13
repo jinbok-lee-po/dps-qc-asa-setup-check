@@ -5,8 +5,47 @@
 
 const VENDOR_GROUP_MARK = /vendor\s+group\s+filters/i;
 const VERTICAL_TYPE_IS_SHOP = /vertical\s*type[\s\S]{0,500}?\bis\b[\s\S]{0,240}?\bshop\b/i;
-const DELIVERY_TYPES_IS_PLATFORM = /delivery\s*types[\s\S]{0,400}?\bis\b[\s\S]{0,320}?\bPLATFORM_DELIVERY\b/i;
-const NEXT_FILTER_AFTER_VALUE = /\n\s*(?:Delivery types|Vertical type|Vendor ids|Add filter)\b/i;
+/** Delivery type / Delivery types 라벨 (대소문자 무시) */
+const DELIVERY_TYPES_LABEL = /delivery\s+types?\b/i;
+/** PLATFORM_DELIVERY · PLATFORM DELIVERY · PLATFORM-DELIVERY 등 */
+const PLATFORM_DELIVERY_VALUE = /\bPLATFORM[\s_-]+DELIVERY\b/i;
+const NEXT_FILTER_AFTER_VALUE = /\n\s*(?:Delivery types?|Vertical type|Vendor ids|Add filter)\b/i;
+
+/**
+ * Vendor group filters 구간에서 Delivery type(s) … is … PLATFORM_*DELIVERY 를 찾는다.
+ * 한 줄에 붙어 있거나, 라벨·연산자·값이 멀리 떨어져 있어도 라벨~값 구간 안에 is 가 있으면 통과.
+ */
+function checkDeliveryTypesPlatform(section) {
+  const labelM = section.match(DELIVERY_TYPES_LABEL);
+  if (!labelM || labelM.index == null) {
+    return {
+      ok: false,
+      detail:
+        'Vendor group filters 이후 "Delivery type" / "Delivery types" 라벨을 찾지 못했습니다.',
+    };
+  }
+  const fromLabel = section.slice(labelM.index);
+  const valueM = fromLabel.match(PLATFORM_DELIVERY_VALUE);
+  if (!valueM || valueM.index == null) {
+    return {
+      ok: false,
+      detail:
+        'Delivery types 근처에서 PLATFORM_DELIVERY(또는 PLATFORM DELIVERY / PLATFORM-DELIVERY) 값을 찾지 못했습니다.',
+    };
+  }
+  const betweenLabelAndValue = fromLabel.slice(labelM[0].length, valueM.index);
+  if (!/\bis\b/i.test(betweenLabelAndValue)) {
+    return {
+      ok: false,
+      detail:
+        'Delivery types 와 PLATFORM_DELIVERY 사이에 연산자 "is"가 없습니다.',
+    };
+  }
+  return {
+    ok: true,
+    detail: `Delivery types is ${valueM[0].trim()} 확인됨.`,
+  };
+}
 
 function sliceVendorGroupFiltersSection(fullText) {
   const t = fullText || "";
@@ -63,10 +102,9 @@ export function validateVendorGroupFilters(iframeText) {
 
   const vendorIds = parseVendorIdsCountAfterIs(section);
 
-  const deliveryOk = DELIVERY_TYPES_IS_PLATFORM.test(section);
-  const deliveryDetail = deliveryOk
-    ? 'Delivery types is PLATFORM_DELIVERY 확인됨.'
-    : 'Vendor group filters 이후 "Delivery types" · "is" · "PLATFORM_DELIVERY" 조합을 찾지 못했습니다.';
+  const delivery = checkDeliveryTypesPlatform(section);
+  const deliveryOk = delivery.ok;
+  const deliveryDetail = delivery.detail;
 
   const ok = verticalOk && vendorIds.ok && deliveryOk;
   const checks = {
