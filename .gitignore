@@ -1,0 +1,7 @@
+.venv/
+.DS_Store
+*.zip
+__pycache__/
+*.pyc
+# Nested clone — own .git; avoid submodule/gitlink confusion
+chrome-cdp-skill/
