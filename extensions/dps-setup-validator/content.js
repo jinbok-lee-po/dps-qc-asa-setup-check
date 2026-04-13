@@ -1,24 +1,21 @@
 (() => {
   /**
-   * 접속·리프레시 정책 (레포 scripts/run-vendor-group-cdp.mjs 와 동일 취지)
+   * 네비: 부모·iframe 을 조작하지 않음. background 가 chrome.tabs.create 로 전체 edit URL 을 연 새 탭에서만 폴링.
+   * (CDP 스크립트 run-vendor-group-cdp.mjs 는 별도)
    *
-   * - 매 실험마다 상단 주소를 먼저 목록(#/automatic-assignment)으로 맞춘 뒤 iframe 도 목록으로 replace,
-   *   iframe 해시가 실제로 목록인지 폴링(LIST_ROUTE_WAIT_MS) — 고정 sleep 만으로는 SPA 가 전환 안 하는 경우가 있음.
-   *   목록 진입 실패 시 about:blank 로 문서를 비운 뒤 목록→edit 재시도.
-   * - 목록 확인 후 syncTopLocationToEdit + iframe contentWindow.location.replace(edit) 만 (src/reload 없음).
-   * - edit URL 일치 후 innerText 에 Vendor group filters 가 보일 때까지 폴링.
-   * - 배치 시 실험 사이 BETWEEN_EXPERIMENTS_MS 간격.
+   * - 실행 시 background 가 첫 실험 edit URL 로 새 탭을 연다(주소창에 전체 URL 입력과 동일한 로드).
+   * - 여러 ID 이면 각 실험마다 순서대로 또 새 탭.
+   * - 새 탭에서 NEW_TAB_POST_LOAD_WAIT_MS 대기 후 iframe innerText 폴링 → STEP_DONE.
+   * - 최종 결과는 chrome.storage 로 실행을 눌렀던 탭 패널에 표시.
    */
-  const VERSION = "0.5.0";
+  const VERSION = "0.6.2";
   const POLL_MS = 600;
   const MAX_MS = 45000;
-  const NAV_SETTLE_MS = 400;
-  /** iframe 이 #/automatic-assignment 로 바뀔 때까지 최대 대기 */
-  const LIST_ROUTE_WAIT_MS = 10000;
-  const LIST_ROUTE_POLL_MS = 80;
-  /** 목록 라우트 확인 후 edit 로 넘어가기 전 짧은 안정화 */
-  const LIST_STABILIZE_MS = 120;
-  const BETWEEN_EXPERIMENTS_MS = 700;
+  const NEW_TAB_POST_LOAD_WAIT_MS = 7000;
+  /** 새 탭에서 상단 URL·iframe 이 edit 와 맞을 때까지 (SPA·replaceState 지연) */
+  const ROUTE_ALIGN_WAIT_MS = 45000;
+  const ROUTE_ALIGN_POLL_MS = 250;
+  const OPENER_WAIT_TOTAL_MS = 25 * 60 * 1000;
   const BASE_PATH = "/pv2/kr/p/logistics-dynamic-pricing";
   const ORIGIN = "https://portal.woowahan.com";
   const COMMERCE_HASH_PREFIX = "#/automatic-assignment";
@@ -837,155 +834,86 @@
     return m ? m[1] : null;
   }
 
-  function iframeShowsExperiment(experimentId) {
-    return getIframeRouteExperimentId() === String(experimentId);
-  }
-
-  function iframeHashNormalized() {
-    const href = getIframeLocationHref();
-    if (!href) return "";
+  /** 최상위 창 전체 URL 에서 automatic-assignment/{id}/edit (해시만이 아니라 pathname 혼용 대비) */
+  function getExperimentIdFromTopHash() {
     try {
-      const u = new URL(href);
-      return (u.hash || "").split("?")[0].replace(/\/$/, "").toLowerCase();
+      const u = window.location.href || "";
+      const m = u.match(/automatic-assignment\/(\d+)\/edit(?:[?#]|$)/i);
+      return m ? m[1] : null;
     } catch {
-      return "";
+      return null;
     }
   }
 
-  /** iframe 해시가 정확히 automatic-assignment 목록(하위 /id/edit 없음)인지 */
-  function iframeIsCommerceListRoute() {
-    const base = COMMERCE_HASH_PREFIX.replace(/\/$/, "").toLowerCase();
-    return iframeHashNormalized() === base;
-  }
-
-  function syncTopLocationToList() {
-    const hash = COMMERCE_HASH_PREFIX;
-    const path = window.location.pathname.split("?")[0];
-    const next = `${window.location.origin}${path}${hash}`;
-    try {
-      history.replaceState(null, "", next);
-    } catch {
-      window.location.hash = hash;
-    }
-  }
-
-  async function waitUntilIframeListOrTimeout() {
-    const deadline = Date.now() + LIST_ROUTE_WAIT_MS;
-    while (Date.now() < deadline) {
-      if (iframeIsCommerceListRoute()) return true;
-      await sleep(LIST_ROUTE_POLL_MS);
-    }
-    return false;
-  }
-
-  /** 상단 edit 해시 + iframe replace(edit) 만 (v0.5 — src/reload 없음) */
-  function navIframeToExperimentEditReplace(f, experimentId) {
+  function routeAlignedForExperiment(experimentId) {
     const id = String(experimentId);
-    const editUrl = `${ORIGIN}${BASE_PATH}#/automatic-assignment/${id}/edit`;
-    syncTopLocationToEdit(id);
-    try {
-      f.contentWindow.location.replace(editUrl);
-      return { ok: true };
-    } catch (e) {
-      return { ok: false, error: `iframe edit nav: ${e}` };
-    }
-  }
-
-  /**
-   * 목록 replace 가 SPA 에서 무시될 때: iframe 문서를 비운 뒤 목록→edit 재진입.
-   */
-  async function hardResetIframeNavToListThenEdit(experimentId) {
-    const id = String(experimentId);
-    const f = document.querySelector("iframe.pluginIframe");
-    if (!f?.contentWindow) return { ok: false, error: "no iframe.pluginIframe" };
-    const listUrl = `${ORIGIN}${BASE_PATH}${COMMERCE_HASH_PREFIX}`;
-    try {
-      syncTopLocationToList();
-      f.contentWindow.location.replace("about:blank");
-      const blankDeadline = Date.now() + 5000;
-      while (Date.now() < blankDeadline) {
-        try {
-          if (f.contentWindow.location.href.startsWith("about:blank")) break;
-        } catch {
-          /* navigation in progress */
-        }
-        await sleep(50);
-      }
-      await sleep(80);
-      f.contentWindow.location.replace(listUrl);
-      const okList = await waitUntilIframeListOrTimeout();
-      if (!okList) {
-        return {
-          ok: false,
-          error:
-            "iframe 이 목록(#/automatic-assignment)으로 바뀌지 않습니다. about:blank 리셋 후에도 동일하면 포털·네트워크를 확인하세요.",
-        };
-      }
-      await sleep(LIST_STABILIZE_MS);
-      return navIframeToExperimentEditReplace(f, id);
-    } catch (e) {
-      return { ok: false, error: `hard iframe reset: ${e}` };
-    }
-  }
-
-  /**
-   * 상단·iframe 모두 목록으로 동기화 → iframe 해시가 목록인지 확인 → 상단·iframe edit.
-   * (상단을 먼저 edit 으로만 맞추면 호스트가 iframe 을 덮어써 replace 가 무시되는 경우가 있어 순서 조정.)
-   */
-  async function navIframeListThenEdit(experimentId) {
-    const id = String(experimentId);
-    const f = document.querySelector("iframe.pluginIframe");
-    if (!f || !f.contentWindow) return { ok: false, error: "no iframe.pluginIframe" };
-    const listUrl = `${ORIGIN}${BASE_PATH}${COMMERCE_HASH_PREFIX}`;
-    try {
-      syncTopLocationToList();
-      f.contentWindow.location.replace(listUrl);
-      let okList = await waitUntilIframeListOrTimeout();
-      if (!okList) {
-        return await hardResetIframeNavToListThenEdit(id);
-      }
-      await sleep(LIST_STABILIZE_MS);
-      return navIframeToExperimentEditReplace(f, id);
-    } catch (e) {
-      return { ok: false, error: `iframe nav: ${e}` };
-    }
-  }
-
-  function syncTopLocationToEdit(experimentId) {
-    const id = String(experimentId);
-    const hash = `#/automatic-assignment/${id}/edit`;
-    const path = window.location.pathname.split("?")[0];
-    const next = `${window.location.origin}${path}${hash}`;
-    try {
-      history.replaceState(null, "", next);
-    } catch {
-      window.location.hash = hash;
-    }
+    return getExperimentIdFromTopHash() === id || getIframeRouteExperimentId() === id;
   }
 
   function sleep(ms) {
     return new Promise((r) => setTimeout(r, ms));
   }
 
-  async function runVendorGroupFiltersCheckForExperiment(experimentId, verticalSegment) {
-    const id = String(experimentId);
-    const navR = await navIframeListThenEdit(id);
-    if (!navR.ok) throw new Error(navR.error);
+  /**
+   * MV3 서비스 워커가 잠들면 "Receiving end does not exist" 등 — 짧게 재시도.
+   */
+  async function sendMessageToBackgroundReliable(message, maxAttempts = 10) {
+    let lastErr = null;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        const response = await new Promise((resolve, reject) => {
+          chrome.runtime.sendMessage(message, (resp) => {
+            if (chrome.runtime.lastError) {
+              reject(new Error(chrome.runtime.lastError.message));
+              return;
+            }
+            resolve(resp);
+          });
+        });
+        return response;
+      } catch (e) {
+        lastErr = e;
+        const msg = String(e.message || e);
+        const transient =
+          /Receiving end does not exist|message port closed|Could not establish connection/i.test(
+            msg
+          );
+        if (!transient || attempt === maxAttempts - 1) throw e;
+        await sleep(120 * (attempt + 1));
+      }
+    }
+    throw lastErr;
+  }
 
-    await sleep(NAV_SETTLE_MS);
+  /**
+   * 새 탭 전용: 네비 없이(이미 전체 URL 로 열림) 대기 후 iframe 폴링.
+   * 상단 URL 이 이미 해당 실험 edit 이면 iframe location 이 잠깐 null 이어도 본문+Vendor mark 로 진행 (포털 SPA 특성).
+   */
+  async function pollVendorGroupFiltersInCurrentTab(experimentId, verticalSegment) {
+    const id = String(experimentId);
+    const seg = normalizeVerticalSegment(verticalSegment);
+    await sleep(NEW_TAB_POST_LOAD_WAIT_MS);
 
     const deadline = Date.now() + MAX_MS;
     let lastErr = "timeout: iframe edit URL 또는 Vendor group filters 대기";
     while (Date.now() < deadline) {
-      if (!iframeShowsExperiment(experimentId)) {
-        const cur = getIframeRouteExperimentId();
-        lastErr =
-          cur == null
-            ? "iframe route not on experiment edit yet"
-            : `iframe still on experiment ${cur}, waiting for ${id}`;
+      const topId = getExperimentIdFromTopHash();
+      const iframeId = getIframeRouteExperimentId();
+
+      if (iframeId != null && iframeId !== id) {
+        lastErr = `iframe URL 은 실험 ${iframeId} (기대 ${id}), 상단 ${topId ?? "-"}`;
         await sleep(POLL_MS);
         continue;
       }
+
+      const topOk = topId === id;
+      const iframeOk = iframeId === id;
+      if (!topOk && !iframeOk) {
+        lastErr = `라우트 대기 — 상단 ${topId ?? "-"}, iframe ${iframeId ?? "-"}`;
+        await sleep(POLL_MS);
+        continue;
+      }
+
       const body = readIframeBodyText();
       if (!body.ok) {
         lastErr = body.error || lastErr;
@@ -997,7 +925,7 @@
         await sleep(POLL_MS);
         continue;
       }
-      const v = validateVendorGroupFilters(body.text, { verticalSegment });
+      const v = validateVendorGroupFilters(body.text, { verticalSegment: seg });
       return {
         experimentId,
         ok: v.ok,
@@ -1008,19 +936,68 @@
     throw new Error(lastErr);
   }
 
-  async function runBatch(ids, verticalSegment) {
-    /** @type {object[]} */
-    const out = [];
-    for (let i = 0; i < ids.length; i++) {
-      const experimentId = ids[i];
-      if (i > 0) await sleep(BETWEEN_EXPERIMENTS_MS);
-      try {
-        out.push(await runVendorGroupFiltersCheckForExperiment(experimentId, verticalSegment));
-      } catch (e) {
-        out.push({ experimentId, error: String(e.message || e) });
+  let dpsAutoRunConsumed = false;
+  let dpsAutoRunLock = false;
+
+  async function tryAutoRunFromQueuedNewTab() {
+    if (dpsAutoRunConsumed || dpsAutoRunLock) return;
+    if (!chrome.storage?.local || !chrome.runtime?.id) return;
+
+    const { dpsCommerceRunState: state } = await chrome.storage.local.get("dpsCommerceRunState");
+    if (!state?.ids?.length || state.index >= state.ids.length) return;
+    if (dpsAutoRunConsumed || dpsAutoRunLock) return;
+
+    const expectId = String(state.ids[state.index]);
+    dpsAutoRunLock = true;
+
+    try {
+      const routeDeadline = Date.now() + ROUTE_ALIGN_WAIT_MS;
+      while (Date.now() < routeDeadline) {
+        if (routeAlignedForExperiment(expectId)) break;
+        await sleep(ROUTE_ALIGN_POLL_MS);
       }
+
+      if (!routeAlignedForExperiment(expectId)) {
+        dpsAutoRunConsumed = true;
+        try {
+          await sendMessageToBackgroundReliable({
+            type: "DPS_COMMERCE_STEP_DONE",
+            payload: {
+              ok: false,
+              experimentId: expectId,
+              error:
+                `실험 ${expectId} edit 라우트 대기 초과: 상단·iframe 중 하나에 automatic-assignment/${expectId}/edit 이 보여야 합니다. (SPA·iframe 지연)`,
+            },
+          });
+        } catch (e) {
+          console.warn("[DPS 커머스 검증] STEP_DONE(라우트실패) 전송 실패:", e);
+        }
+        return;
+      }
+
+      dpsAutoRunConsumed = true;
+
+      const seg = normalizeVerticalSegment(state.verticalSegment);
+      try {
+        const result = await pollVendorGroupFiltersInCurrentTab(Number(expectId), seg);
+        await sendMessageToBackgroundReliable({
+          type: "DPS_COMMERCE_STEP_DONE",
+          payload: { ok: true, result },
+        });
+      } catch (e) {
+        const errMsg = String(e.message || e);
+        try {
+          await sendMessageToBackgroundReliable({
+            type: "DPS_COMMERCE_STEP_DONE",
+            payload: { ok: false, experimentId: expectId, error: errMsg },
+          });
+        } catch (e2) {
+          console.warn("[DPS 커머스 검증] STEP_DONE(오류) 전송 실패:", e2);
+        }
+      }
+    } finally {
+      dpsAutoRunLock = false;
     }
-    return out;
   }
 
   function verticalReportValue(verticalCheck) {
@@ -1143,7 +1120,7 @@
         <div class="dps-meta">
           <strong>검증 항목 (Vendor Group Filters, iframe innerText)</strong>
           <ul>
-            <li><strong>실행 시</strong> 입력한 실험마다 iframe 을 목록(<code>#/automatic-assignment</code>)으로 보낸 뒤 해당 <code>…/edit</code> 로 열어, 항상 그 실험 화면을 읽습니다.</li>
+            <li><strong>실행 시</strong> 부모 창·iframe 은 건드리지 않고, <strong>새 탭</strong>에 전체 edit URL(<code>https://portal…/logistics-dynamic-pricing#/automatic-assignment/…/edit</code>)로 엽니다. 여러 ID면 실험마다 순서대로 새 탭이 열립니다. 각 탭에서 약 <strong>7초</strong> 후 iframe 텍스트를 읽고, 결과는 <strong>이 탭 패널</strong>에 모입니다.</li>
             <li><strong>Clause/Values UI</strong>: 첫 숫자-only <code>Values</code> 블록 → vendor id <strong>개수·목록</strong></li>
             <li>위에서 고른 <strong>푸드 / 커머스</strong>에 맞춰 Vertical <code>Values</code>가 <strong>shop</strong>(커머스) 또는 <strong>restaurants</strong>(푸드)인지, <strong>is / is not</strong> 판별</li>
             <li>Delivery: <strong>is PLATFORM_DELIVERY</strong> (is not 이면 NG)</li>
@@ -1234,24 +1211,89 @@
         return;
       }
 
+      if (!chrome.runtime?.id) {
+        const p = document.createElement("p");
+        p.className = "dps-err";
+        p.textContent = "확장 프로그램 컨텍스트를 사용할 수 없습니다. 페이지를 새로고침하거나 확장을 다시 로드하세요.";
+        panel.querySelector(".dps-actions").after(p);
+        return;
+      }
+
       runBtn.disabled = true;
-      runBtn.textContent = "실행 중…";
+      runBtn.textContent = "새 탭 열림…";
       let succeeded = false;
+
+      const verticalSegment = readSelectedVerticalSegment();
+      persistVerticalSegment(verticalSegment);
+
+      await chrome.storage.local.remove(["dpsCommerceFinalResults"]);
+
+      let storageListener = null;
+      let waitTimer = null;
+
+      const cleanupWait = () => {
+        if (storageListener) {
+          chrome.storage.onChanged.removeListener(storageListener);
+          storageListener = null;
+        }
+        if (waitTimer != null) {
+          clearTimeout(waitTimer);
+          waitTimer = null;
+        }
+      };
+
+      const finishWithError = (msg) => {
+        cleanupWait();
+        const p = document.createElement("p");
+        p.className = "dps-err";
+        p.textContent = msg;
+        panel.querySelector(".dps-actions").after(p);
+        runBtn.disabled = false;
+        runBtn.textContent = "실행";
+        syncFabVisibility();
+      };
+
       try {
-        const verticalSegment = readSelectedVerticalSegment();
-        persistVerticalSegment(verticalSegment);
-        const batchResults = await runBatch(ids, verticalSegment);
+        const startResp = await sendMessageToBackgroundReliable({
+          type: "DPS_COMMERCE_START_RUN",
+          ids,
+          verticalSegment,
+        });
+        if (!startResp?.ok) {
+          throw new Error(startResp?.error || "새 탭을 열지 못했습니다.");
+        }
+
+        runBtn.textContent = "검증 중(새 탭)…";
+
+        const fin = await new Promise((resolve, reject) => {
+          waitTimer = setTimeout(() => {
+            cleanupWait();
+            reject(new Error("결과 대기 시간이 초과되었습니다. 새 탭이 모두 열렸는지 확인하세요."));
+          }, OPENER_WAIT_TOTAL_MS);
+
+          storageListener = (changes, area) => {
+            if (area !== "local" || !changes.dpsCommerceFinalResults) return;
+            const next = changes.dpsCommerceFinalResults.newValue;
+            if (!next || !Array.isArray(next.results)) return;
+            cleanupWait();
+            resolve(next);
+          };
+          chrome.storage.onChanged.addListener(storageListener);
+        });
+
         const pre = document.createElement("pre");
-        pre.textContent = buildReportText(batchResults, { verticalSegment });
+        let text = buildReportText(fin.results, { verticalSegment: fin.verticalSegment });
+        if (fin.runError) {
+          text += `\n\n(경고: ${fin.runError})`;
+        }
+        pre.textContent = text;
         resultsEl.appendChild(pre);
         resultsEl.classList.add("dps-visible");
         succeeded = true;
       } catch (e) {
-        const p = document.createElement("p");
-        p.className = "dps-err";
-        p.textContent = String(e.message || e);
-        panel.querySelector(".dps-actions").after(p);
+        finishWithError(String(e.message || e));
       } finally {
+        if (storageListener) cleanupWait();
         runBtn.disabled = false;
         runBtn.textContent = "실행";
         if (succeeded) completeBanner.classList.add("dps-visible");
@@ -1269,8 +1311,17 @@
       fab.style.display = isCommerceExperimentsRoute() ? "block" : "none";
     }
 
+    function scheduleTryAutoRun() {
+      queueMicrotask(() => {
+        tryAutoRunFromQueuedNewTab().catch((err) => {
+          console.warn("[DPS 커머스 검증] 새 탭 자동 검증:", err);
+        });
+      });
+    }
+
     function onUserNavigation() {
       syncFabVisibility();
+      scheduleTryAutoRun();
       if (!isCommerceExperimentsRoute() && panelWrap.classList.contains("dps-open")) closePanel();
     }
 
@@ -1280,7 +1331,11 @@
 
     function hookHistoryForFabSync() {
       try {
-        const notify = () => queueMicrotask(() => syncFabVisibility());
+        const notify = () =>
+          queueMicrotask(() => {
+            syncFabVisibility();
+            scheduleTryAutoRun();
+          });
         const origPush = history.pushState;
         const origReplace = history.replaceState;
         if (typeof origPush !== "function" || typeof origReplace !== "function") return;
@@ -1308,6 +1363,11 @@
 
   try {
     ensureRoot();
+    queueMicrotask(() => {
+      tryAutoRunFromQueuedNewTab().catch((err) => {
+        console.warn("[DPS 커머스 검증] 새 탭 자동 검증:", err);
+      });
+    });
   } catch (e) {
     console.error("[DPS 커머스 검증] 초기화 실패:", e);
   }
