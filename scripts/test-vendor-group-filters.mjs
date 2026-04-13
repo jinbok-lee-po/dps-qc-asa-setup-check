@@ -3,7 +3,10 @@
  * vendor-group-filters-logic.mjs 단위 테스트 (content.js 와 규칙 동일).
  */
 
-import { validateVendorGroupFilters } from "./vendor-group-filters-logic.mjs";
+import {
+  buildVendorGroupFiltersReportText,
+  validateVendorGroupFilters,
+} from "./vendor-group-filters-logic.mjs";
 
 /** 포털 실제 innerText 샘플 (Clause / Values) */
 const PORTAL_CLAUSE_VALUES_SAMPLE = `Vendor Group Filters
@@ -110,5 +113,20 @@ r = validateVendorGroupFilters("Vendor group filters\nVertical type\nis\nshop\nD
 assert(r.ok === false, "missing vendor ids");
 assert(r.checks.vendorIds.ok === false, "vendor ids parse fail");
 console.log("OK: Vendor ids 없음 불통과(예상)");
+
+{
+  const v = validateVendorGroupFilters(PORTAL_CLAUSE_VALUES_SAMPLE);
+  const report = buildVendorGroupFiltersReportText([
+    { experimentId: 483, ok: v.ok, detail: v.detail, checks: v.checks },
+  ]);
+  assert(report.includes("=== 검증 항목 ==="), "report header");
+  assert(report.includes("실험 ID: 483 - 정상"), "report experiment status");
+  assert(report.includes("(1) Vertical\tOK\tshop"), "report vertical line");
+  assert(report.includes("(2) delivery\tOK\tPLATFORM_DELIVERY"), "report delivery line");
+  assert(report.includes("(3) Vendor id\t2개\t99999999, 99999998"), "report vendor line");
+  assert(report.includes("요약: 통과 1"), "report summary");
+  assert(report.includes('"experimentId": 483'), "report trailing JSON");
+  console.log("OK: CDP/익스텐션 공통 리포트 문자열");
+}
 
 console.log("\n전부 통과.");

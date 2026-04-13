@@ -205,3 +205,67 @@ export function validateVendorGroupFilters(iframeText) {
 
   return { ok, checks, detail };
 }
+
+function verticalReportValue(verticalCheck) {
+  if (!verticalCheck.ok) return verticalCheck.detail || "NG";
+  const d = verticalCheck.detail || "";
+  if (/restaurant/i.test(d)) return "restaurant";
+  if (/shop/i.test(d)) return "shop";
+  return "OK";
+}
+
+/**
+ * 익스텐션 content.js `buildReportText` 와 동일한 문자열 (문구 수정 시 양쪽 동기화).
+ * @param {Array<{ experimentId: number, ok?: boolean, detail?: string, checks?: object, error?: string }>} results
+ */
+export function buildVendorGroupFiltersReportText(results) {
+  const lines = [];
+  lines.push("=== 검증 항목 ===");
+  lines.push("(1) Vertical 설정이 올바르게 되어있는지 (Bmart: shop, Food: restaurant)");
+  lines.push("(2) delivery type이 OD(PLATFORM_DELIVERY)로 설정되어 있는지");
+  lines.push("(3) ASA ID별 vendor id 개수·목록");
+  lines.push("");
+  for (const r of results) {
+    if (r.error) {
+      lines.push(`실험 ID: ${r.experimentId} - 수집 실패`);
+      lines.push(`  ${r.error}`);
+      lines.push("");
+      continue;
+    }
+    const statusLabel = r.ok ? "정상" : "불통과";
+    lines.push(`실험 ID: ${r.experimentId} - ${statusLabel}`);
+    if (r.checks) {
+      const c = r.checks;
+      const vMark = c.verticalTypeShop.ok ? "OK" : "NG";
+      lines.push(`(1) Vertical\t${vMark}\t${verticalReportValue(c.verticalTypeShop)}`);
+      const dMark = c.deliveryTypesPlatform.ok ? "OK" : "NG";
+      const dVal = c.deliveryTypesPlatform.ok
+        ? "PLATFORM_DELIVERY"
+        : c.deliveryTypesPlatform.detail;
+      lines.push(`(2) delivery\t${dMark}\t${dVal}`);
+      const vid = c.vendorIds;
+      if (vid.ok) {
+        const n = vid.count != null ? vid.count : vid.ids?.length ?? 0;
+        const listStr =
+          vid.ids == null
+            ? "(미수집)"
+            : vid.ids.length === 0
+              ? "(없음)"
+              : vid.ids.join(", ");
+        lines.push(`(3) Vendor id\t${n}개\t${listStr}`);
+      } else {
+        lines.push(`(3) Vendor id\tNG\t${vid.detail}`);
+      }
+    }
+    lines.push("");
+  }
+  const pass = results.filter((x) => x.ok === true).length;
+  const failRule = results.filter((x) => x.ok === false && !x.error).length;
+  const failTech = results.filter((x) => x.error).length;
+  lines.push(
+    `요약: 통과 ${pass} · 규칙 불통과 ${failRule} · 수집 실패 ${failTech} (총 ${results.length}건)`
+  );
+  lines.push("");
+  lines.push(JSON.stringify({ results, summary: { pass, failRule, failTech, total: results.length } }, null, 2));
+  return lines.join("\n");
+}

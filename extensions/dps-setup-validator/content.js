@@ -351,37 +351,53 @@
     return out;
   }
 
+  function verticalReportValue(verticalCheck) {
+    if (!verticalCheck.ok) return verticalCheck.detail || "NG";
+    const d = verticalCheck.detail || "";
+    if (/restaurant/i.test(d)) return "restaurant";
+    if (/shop/i.test(d)) return "shop";
+    return "OK";
+  }
+
+  /** scripts/vendor-group-filters-logic.mjs `buildVendorGroupFiltersReportText` 와 동일 (동기화 필수) */
   function buildReportText(results) {
     const lines = [];
-    lines.push("=== Vendor group filters 검증 ===");
-    lines.push(
-      "(1) shop (2) vendor id 개수·목록 (3) PLATFORM_DELIVERY — Clause/Values UI 또는 레거시 라벨"
-    );
+    lines.push("=== 검증 항목 ===");
+    lines.push("(1) Vertical 설정이 올바르게 되어있는지 (Bmart: shop, Food: restaurant)");
+    lines.push("(2) delivery type이 OD(PLATFORM_DELIVERY)로 설정되어 있는지");
+    lines.push("(3) ASA ID별 vendor id 개수·목록");
     lines.push("");
     for (const r of results) {
       if (r.error) {
-        lines.push(`${r.experimentId}\t실패: ${r.error}`);
+        lines.push(`실험 ID: ${r.experimentId} - 수집 실패`);
+        lines.push(`  ${r.error}`);
+        lines.push("");
         continue;
       }
-      const st = r.ok ? "통과" : "불통과";
-      lines.push(`${r.experimentId}\t${st}\t${r.detail}`);
+      const statusLabel = r.ok ? "정상" : "불통과";
+      lines.push(`실험 ID: ${r.experimentId} - ${statusLabel}`);
       if (r.checks) {
         const c = r.checks;
-        lines.push(
-          `  · vertical\t${c.verticalTypeShop.ok ? "OK" : "NG"}\t${c.verticalTypeShop.detail}`
-        );
-        lines.push(
-          `  · vendorIds\t${c.vendorIds.ok ? "OK" : "NG"}\t${c.vendorIds.detail}`
-        );
-        {
-          const vid = c.vendorIds.ids;
+        const vMark = c.verticalTypeShop.ok ? "OK" : "NG";
+        lines.push(`(1) Vertical\t${vMark}\t${verticalReportValue(c.verticalTypeShop)}`);
+        const dMark = c.deliveryTypesPlatform.ok ? "OK" : "NG";
+        const dVal = c.deliveryTypesPlatform.ok
+          ? "PLATFORM_DELIVERY"
+          : c.deliveryTypesPlatform.detail;
+        lines.push(`(2) delivery\t${dMark}\t${dVal}`);
+        const vid = c.vendorIds;
+        if (vid.ok) {
+          const n = vid.count != null ? vid.count : vid.ids?.length ?? 0;
           const listStr =
-            vid == null ? "(미수집)" : vid.length === 0 ? "(0개)" : vid.join(", ");
-          lines.push(`  · vendorId목록\t${listStr}`);
+            vid.ids == null
+              ? "(미수집)"
+              : vid.ids.length === 0
+                ? "(없음)"
+                : vid.ids.join(", ");
+          lines.push(`(3) Vendor id\t${n}개\t${listStr}`);
+        } else {
+          lines.push(`(3) Vendor id\tNG\t${vid.detail}`);
         }
-        lines.push(
-          `  · delivery\t${c.deliveryTypesPlatform.ok ? "OK" : "NG"}\t${c.deliveryTypesPlatform.detail}`
-        );
       }
       lines.push("");
     }

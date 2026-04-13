@@ -10,6 +10,7 @@
  * 사용:
  *   node scripts/run-vendor-group-cdp.mjs 461
  *   node scripts/run-vendor-group-cdp.mjs 461,462 --target 6BE827FA
+ *   node scripts/run-vendor-group-cdp.mjs 483 --no-overlay   # stdout만 (오버레이 없음)
  *
  * 환경변수: CHROME_CDP_SKILL (cdp.mjs 가 있는 스킬 루트), DPS_ZONES_* 폴링 옵션
  */
@@ -19,7 +20,10 @@ import { existsSync } from "fs";
 import { homedir } from "os";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
-import { validateVendorGroupFilters } from "./vendor-group-filters-logic.mjs";
+import {
+  buildVendorGroupFiltersReportText,
+  validateVendorGroupFilters,
+} from "./vendor-group-filters-logic.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = join(__dirname, "..");
@@ -175,14 +179,120 @@ function fetchIframeTextForExperiment(cdpRoot, targetPrefix, experimentId) {
   throw new Error(lastErr);
 }
 
+function buildReportOverlayEval(reportText) {
+  const t = JSON.stringify(reportText);
+  return `(() => {
+    const text = ${t};
+    const id = "dps-cdp-vendor-report-overlay";
+    document.getElementById(id)?.remove();
+    const backdrop = document.createElement("div");
+    backdrop.id = id;
+    backdrop.setAttribute("role", "dialog");
+    backdrop.setAttribute("aria-label", "DPS Vendor group filters CDP 결과");
+    Object.assign(backdrop.style, {
+      position: "fixed",
+      inset: "0",
+      zIndex: "2147483647",
+      background: "rgba(0,0,0,0.35)",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: "16px",
+      fontFamily: 'system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans KR", sans-serif',
+    });
+    const box = document.createElement("div");
+    Object.assign(box.style, {
+      background: "#fff",
+      borderRadius: "12px",
+      boxShadow: "0 12px 40px rgba(0,0,0,0.25)",
+      maxWidth: "min(720px, 100%)",
+      maxHeight: "min(88vh, 920px)",
+      width: "100%",
+      display: "flex",
+      flexDirection: "column",
+      overflow: "hidden",
+    });
+    const hdr = document.createElement("div");
+    Object.assign(hdr.style, {
+      flexShrink: "0",
+      padding: "12px 16px",
+      borderBottom: "1px solid #e8e8e8",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: "8px",
+      fontWeight: "700",
+      fontSize: "15px",
+    });
+    const title = document.createElement("span");
+    title.textContent = "Vendor group filters 검증 결과 (CDP)";
+    const closeBtn = document.createElement("button");
+    closeBtn.type = "button";
+    closeBtn.textContent = "닫기";
+    Object.assign(closeBtn.style, {
+      border: "none",
+      background: "#f1f3f5",
+      padding: "8px 14px",
+      borderRadius: "8px",
+      cursor: "pointer",
+      fontWeight: "600",
+      fontSize: "13px",
+    });
+    const pre = document.createElement("pre");
+    pre.textContent = text;
+    Object.assign(pre.style, {
+      margin: "0",
+      padding: "14px 16px",
+      overflow: "auto",
+      flex: "1",
+      minHeight: "0",
+      fontSize: "12px",
+      lineHeight: "1.45",
+      whiteSpace: "pre-wrap",
+      wordBreak: "break-word",
+    });
+    function dismiss() {
+      backdrop.remove();
+    }
+    closeBtn.addEventListener("click", dismiss);
+    backdrop.addEventListener("click", (e) => {
+      if (e.target === backdrop) dismiss();
+    });
+    hdr.appendChild(title);
+    hdr.appendChild(closeBtn);
+    box.appendChild(hdr);
+    box.appendChild(pre);
+    backdrop.appendChild(box);
+    document.body.appendChild(backdrop);
+    return JSON.stringify({ ok: true });
+  })()`;
+}
+
+function showReportOverlayInPortalTab(cdpRoot, targetPrefix, reportText) {
+  const out = runCdp(cdpRoot, ["eval", targetPrefix, buildReportOverlayEval(reportText)]);
+  const line = out.trim().split("\n").pop() || out.trim();
+  let data;
+  try {
+    data = JSON.parse(line);
+  } catch {
+    throw new Error(`오버레이 eval 파싱 실패:\n${out}`);
+  }
+  if (!data.ok) throw new Error(data.error || "overlay failed");
+}
+
 function parseArgs(argv) {
   const ids = [];
   let targetPrefix = "";
+  let noOverlay = false;
   const rest = argv.slice(2);
   for (let i = 0; i < rest.length; i++) {
     if (rest[i] === "--target") {
       targetPrefix = rest[i + 1] || "";
       i++;
+      continue;
+    }
+    if (rest[i] === "--no-overlay") {
+      noOverlay = true;
       continue;
     }
     if (rest[i].startsWith("--")) continue;
@@ -193,7 +303,7 @@ function parseArgs(argv) {
     }
   }
   if (ids.length === 0) throw new Error("실험 ID를 인자로 주세요. 예: node scripts/run-vendor-group-cdp.mjs 461");
-  return { ids: [...new Set(ids)].sort((a, b) => a - b), targetPrefix };
+  return { ids: [...new Set(ids)].sort((a, b) => a - b), targetPrefix, noOverlay };
 }
 
 function main() {
@@ -215,16 +325,36 @@ function main() {
 
   const targetPrefix = resolveTargetPrefix(cdpRoot, parsed.targetPrefix);
 
+  /** @type {object[]} */
+  const results = [];
   for (const experimentId of parsed.ids) {
     console.error(`\n--- 실험 ${experimentId} (CDP) ---`);
     try {
       const text = fetchIframeTextForExperiment(cdpRoot, targetPrefix, experimentId);
       const v = validateVendorGroupFilters(text);
-      console.log(JSON.stringify({ experimentId, ...v }, null, 2));
+      results.push({
+        experimentId,
+        ok: v.ok,
+        detail: v.detail,
+        checks: v.checks,
+      });
       if (!v.ok) process.exitCode = 1;
     } catch (e) {
-      console.log(JSON.stringify({ experimentId, ok: false, error: String(e.message || e) }, null, 2));
+      results.push({ experimentId, error: String(e.message || e) });
       process.exitCode = 1;
+    }
+  }
+  const reportText = buildVendorGroupFiltersReportText(results);
+  console.log(reportText);
+
+  const skipOverlay =
+    parsed.noOverlay || String(process.env.DPS_CDP_REPORT_OVERLAY || "").trim() === "0";
+  if (!skipOverlay) {
+    try {
+      showReportOverlayInPortalTab(cdpRoot, targetPrefix, reportText);
+      console.error("(포털 탭에 결과 리포트 오버레이를 표시했습니다. 닫기 또는 바깥 영역 클릭으로 닫을 수 있습니다.)");
+    } catch (e) {
+      console.error("(오버레이 표시 실패 — 터미널 stdout 리포트를 사용하세요):", e.message || e);
     }
   }
 }
