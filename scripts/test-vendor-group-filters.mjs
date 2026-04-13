@@ -23,6 +23,7 @@ Values
 
 Top 50 items shown in the dropdown (search for more); refresh if items missing.
 
+Vertical type
 Filter
 Filter
 Clause
@@ -89,10 +90,19 @@ assert(r.checks.vendorIds.count === 3, "vendor id count 3");
 assert(r.checks.vendorIds.ids.length === 3, "legacy vendor id list length");
 console.log("OK: 전체 통과 목, vendorIds=3");
 
-r = validateVendorGroupFilters("Vendor group filters\nVendor ids\nis\na\nb\nDelivery types\nis\nPLATFORM_DELIVERY\nVertical type\nis\nshop");
-assert(r.ok === true, "newline-separated ids");
+r = validateVendorGroupFilters(
+  "Vendor group filters\nVendor ids\nis\n11\n22\nDelivery types\nis\nPLATFORM_DELIVERY\nVertical type\nis\nshop"
+);
+assert(r.ok === true, "newline-separated numeric ids");
 assert(r.checks.vendorIds.count === 2, "two ids");
-console.log("OK: 줄바꿈 구분 id 2개");
+console.log("OK: 줄바꿈 구분 숫자 id 2개");
+
+r = validateVendorGroupFilters(
+  "Vendor group filters\nVendor ids\nis\na\nb\nDelivery types\nis\nPLATFORM_DELIVERY\nVertical type\nis\nshop"
+);
+assert(r.ok === false, "non-numeric vendor ids should fail");
+assert(r.checks.vendorIds.ok === false, "vendor ids ng");
+console.log("OK: 비숫자 vendor id 불통과(예상)");
 
 r = validateVendorGroupFilters(fullMock.replace("PLATFORM_DELIVERY", "PICKUP"));
 assert(r.ok === false, "wrong delivery");
@@ -113,6 +123,73 @@ r = validateVendorGroupFilters("Vendor group filters\nVertical type\nis\nshop\nD
 assert(r.ok === false, "missing vendor ids");
 assert(r.checks.vendorIds.ok === false, "vendor ids parse fail");
 console.log("OK: Vendor ids 없음 불통과(예상)");
+
+const DUPLICATE_SHOP = `Vendor group filters
+Vertical type
+Filter
+Clause
+is
+Clause
+Values
+shop
+Values
+Filter
+Clause
+is
+Clause
+Values
+shop
+Values
+Delivery types
+is
+PLATFORM_DELIVERY
+Vendor ids
+is
+1
+`;
+r = validateVendorGroupFilters(DUPLICATE_SHOP);
+assert(r.ok === false, "duplicate shop Values blocks");
+assert(r.checks.verticalTypeShop.ok === false, "vertical ng on duplicate shop");
+console.log("OK: shop Values 중복 불통과(예상)");
+
+const SHOP_WITH_EXTRA = `Vendor group filters
+Vertical type
+Clause
+is
+Clause
+Values
+shop, mart
+Values
+Vendor ids
+is
+1
+Delivery types
+is
+PLATFORM_DELIVERY
+`;
+r = validateVendorGroupFilters(SHOP_WITH_EXTRA);
+assert(r.ok === false, "vertical values not only shop");
+assert(r.checks.verticalTypeShop.ok === false, "vertical strict token");
+console.log("OK: Vertical is 값에 shop 외 토큰 불통과(예상)");
+
+const SHOP_NO_LABEL = `Vendor group filters
+Clause
+is
+Clause
+Values
+shop
+Values
+Vendor ids
+is
+1
+Delivery types
+is
+PLATFORM_DELIVERY
+`;
+r = validateVendorGroupFilters(SHOP_NO_LABEL);
+assert(r.ok === false, "shop without Vertical type label");
+assert(r.checks.verticalTypeShop.ok === false, "vertical label required");
+console.log("OK: Vertical type 라벨 없이 shop 만 있으면 불통과(예상)");
 
 {
   const v = validateVendorGroupFilters(PORTAL_CLAUSE_VALUES_SAMPLE);

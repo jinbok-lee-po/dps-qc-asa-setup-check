@@ -4,11 +4,13 @@
  *
  * UI A: 영문 라벨 (Vendor ids / Vertical type / Delivery types)
  * UI B: Clause · is · Clause · Values … Values (포털 실제 innerText)
+ *
+ * Delivery / Vendor id: Vertical 과 같이 해당 라벨·is·Values(또는 레거시 한 줄)에 묶어 검증.
+ * 라벨 없는 Clause/Values 전용 UI 는 PLATFORM_DELIVERY·숫자-only Values 각각 단일 블록만 허용.
+ * Vendor id 토큰은 숫자만 허용.
  */
 
 const VENDOR_GROUP_MARK = /vendor\s+group\s+filters/i;
-/** 레거시: Vertical type … is … shop */
-const VERTICAL_TYPE_IS_SHOP = /vertical\s*type[\s\S]{0,500}?\bis\b[\s\S]{0,240}?\bshop\b/i;
 const DELIVERY_TYPES_LABEL = /delivery\s+types?\b/i;
 const PLATFORM_DELIVERY_VALUE = /\bPLATFORM[\s_-]+DELIVERY\b/i;
 const NEXT_FILTER_AFTER_VALUE = /\n\s*(?:Delivery types?|Vertical type|Vendor ids|Add filter)\b/i;
@@ -42,29 +44,343 @@ function tokensInBlock(inner) {
     .filter(Boolean);
 }
 
-/** 첫 번째 "숫자만" Values 블록 → vendor id 개수 */
-function vendorIdsFromClauseValuesBlocks(blocks) {
-  for (const inner of blocks) {
-    const tokens = tokensInBlock(inner);
-    if (tokens.length === 0) continue;
-    if (tokens.every((t) => /^\d+$/.test(t))) {
+function extractDeliveryTypesValuesInner(section) {
+  const labelRe = /delivery\s*types?\b/i;
+  const lm = section.match(labelRe);
+  if (!lm || lm.index == null) return { inner: null, mode: "none" };
+  let rest = section.slice(lm.index + lm[0].length);
+  const isM = rest.match(/\bis\b/i);
+  if (!isM) return { inner: null, mode: "none" };
+  rest = rest.slice(isM.index + isM[0].length);
+  const vOpen = rest.match(/\bValues\b/i);
+  if (vOpen) {
+    const after = rest.slice(vOpen.index + vOpen[0].length);
+    const vClose = after.match(/\bValues\b/i);
+    if (!vClose) return { inner: null, mode: "none" };
+    return {
+      inner: after.slice(0, vClose.index).trim(),
+      mode: "values",
+    };
+  }
+  const stop = rest.search(
+    /\n\s*(?:Vertical\s*types?|Vendor ids|Add filter|Delivery\s*types?\b)/i
+  );
+  const raw = (stop === -1 ? rest : rest.slice(0, stop)).trim();
+  return { inner: raw || null, mode: raw ? "legacy" : "none" };
+}
+
+function isStrictDeliveryPlatformInner(inner) {
+  const t = inner.trim();
+  if (!t) {
+    return { ok: false, reason: "Delivery type(s) is 다음 값이 비어 있습니다." };
+  }
+  if (/^PLATFORM[\s_-]+DELIVERY$/i.test(t)) return { ok: true };
+  return {
+    ok: false,
+    reason:
+      "Delivery type(s) is 값은 OD용 PLATFORM_DELIVERY(또는 PLATFORM DELIVERY / PLATFORM-DELIVERY)만 허용됩니다.",
+  };
+}
+
+function checkDeliveryTypeStrict(section, blocks) {
+  const platformBlocks = blocks.filter((b) =>
+    /^PLATFORM[\s_-]+DELIVERY$/i.test(b.trim())
+  );
+  const { inner, mode } = extractDeliveryTypesValuesInner(section);
+
+  if (mode === "values") {
+    const strict = isStrictDeliveryPlatformInner(inner);
+    if (!strict.ok) return { ok: false, detail: strict.reason };
+    if (platformBlocks.length !== 1) {
+      return {
+        ok: false,
+        detail:
+          platformBlocks.length === 0
+            ? "Delivery type(s) is Values 텍스트는 있으나 Clause/Values 목록에서 PLATFORM_DELIVERY 블록을 찾지 못했습니다."
+            : `PLATFORM_DELIVERY Values 블록이 ${platformBlocks.length}개입니다. Delivery type(s) is 에 해당하는 블록만 허용됩니다.`,
+      };
+    }
+    return {
+      ok: true,
+      detail:
+        "Delivery type(s) is — Values에 PLATFORM_DELIVERY만 있고, 다른 Values 블록에 OD(중복) 설정이 없습니다.",
+    };
+  }
+
+  if (mode === "legacy") {
+    const strict = isStrictDeliveryPlatformInner(inner);
+    if (!strict.ok) return { ok: false, detail: strict.reason };
+    if (platformBlocks.length > 0) {
+      return {
+        ok: false,
+        detail:
+          "Delivery type(s) is 는 레거시 한 줄인데, Clause/Values 블록에도 PLATFORM_DELIVERY가 있습니다.",
+      };
+    }
+    return {
+      ok: true,
+      detail: `Delivery types is ${inner.trim()} 확인됨 (레거시 UI).`,
+    };
+  }
+
+  if (platformBlocks.length === 1) {
+    const strict = isStrictDeliveryPlatformInner(platformBlocks[0]);
+    if (!strict.ok) {
+      return {
+        ok: false,
+        detail: "Values에 PLATFORM_DELIVERY(OD) 형태가 아닌 블록이 있습니다.",
+      };
+    }
+    return {
+      ok: true,
+      detail:
+        "Clause/Values UI — Delivery 라벨 없이 PLATFORM_DELIVERY 단일 Values 블록 확인 (OD).",
+    };
+  }
+  if (platformBlocks.length > 1) {
+    return {
+      ok: false,
+      detail: `PLATFORM_DELIVERY Values 블록이 ${platformBlocks.length}개입니다. OD 설정은 하나만 허용됩니다.`,
+    };
+  }
+
+  const legacy = checkDeliveryTypesPlatform(section);
+  if (!legacy.ok) return { ok: false, detail: legacy.detail };
+  return { ok: true, detail: legacy.detail };
+}
+
+function extractVendorIdsValuesInner(section) {
+  const labelRe = /vendor\s*ids\b/i;
+  const lm = section.match(labelRe);
+  if (!lm || lm.index == null) return { inner: null, mode: "none" };
+  let rest = section.slice(lm.index + lm[0].length);
+  const isM = rest.match(/\bis\b/i);
+  if (!isM) return { inner: null, mode: "none" };
+  rest = rest.slice(isM.index + isM[0].length);
+  const vOpen = rest.match(/\bValues\b/i);
+  if (vOpen) {
+    const after = rest.slice(vOpen.index + vOpen[0].length);
+    const vClose = after.match(/\bValues\b/i);
+    if (!vClose) return { inner: null, mode: "none" };
+    return {
+      inner: after.slice(0, vClose.index).trim(),
+      mode: "values",
+    };
+  }
+  const afterIs = rest;
+  const stop = afterIs.search(NEXT_FILTER_AFTER_VALUE);
+  const raw = (stop === -1 ? afterIs : afterIs.slice(0, stop)).trim();
+  return { inner: raw, mode: "legacy" };
+}
+
+function checkVendorIdsStrict(section, blocks) {
+  const numericBlocks = blocks.filter((b) => {
+    const tokens = tokensInBlock(b);
+    return tokens.length > 0 && tokens.every((t) => /^\d+$/.test(t));
+  });
+
+  const { inner, mode } = extractVendorIdsValuesInner(section);
+
+  if (mode === "values" || mode === "legacy") {
+    const tokens = tokensInBlock(inner || "");
+    if (tokens.length === 0) {
+      return {
+        ok: true,
+        count: 0,
+        ids: [],
+        detail:
+          mode === "values"
+            ? "Vendor ids is Values가 비어 있습니다 (0개)."
+            : "Vendor ids is 다음에 값이 없습니다 (0개).",
+      };
+    }
+    if (!tokens.every((t) => /^\d+$/.test(t))) {
+      return {
+        ok: false,
+        count: null,
+        ids: null,
+        detail: "Vendor ids is 값은 숫자 id만 허용됩니다.",
+      };
+    }
+    if (mode === "values") {
+      if (numericBlocks.length !== 1) {
+        return {
+          ok: false,
+          count: null,
+          ids: null,
+          detail:
+            numericBlocks.length === 0
+              ? "Vendor ids is Values 텍스트는 있으나 Clause/Values 목록에서 숫자-only 블록을 찾지 못했습니다."
+              : `숫자-only Vendor Values 블록이 ${numericBlocks.length}개입니다. Vendor ids is 에 해당하는 블록만 허용됩니다.`,
+        };
+      }
+      const nbTok = tokensInBlock(numericBlocks[0]);
+      if (JSON.stringify(nbTok) !== JSON.stringify(tokens)) {
+        return {
+          ok: false,
+          count: null,
+          ids: null,
+          detail: "Vendor ids is Values 와 Clause/Values 목록의 숫자 블록이 일치하지 않습니다.",
+        };
+      }
       return {
         ok: true,
         count: tokens.length,
         ids: tokens,
-        detail: `Clause/Values UI — vendor id ${tokens.length}개: ${tokens.join(", ")}`,
+        detail: `Vendor ids is — Values 기준 vendor id ${tokens.length}개: ${tokens.join(", ")}`,
+      };
+    }
+    if (numericBlocks.length > 0) {
+      return {
+        ok: false,
+        count: null,
+        ids: null,
+        detail:
+          "Vendor ids is 는 레거시 텍스트인데, Clause/Values 블록에도 숫자-only vendor Values가 있습니다.",
+      };
+    }
+    return {
+      ok: true,
+      count: tokens.length,
+      ids: tokens,
+      detail: `Vendor ids is 다음 vendor id(그룹) 개수: ${tokens.length}개: ${tokens.join(", ")}`,
+    };
+  }
+
+  if (numericBlocks.length === 0) {
+    return {
+      ok: false,
+      count: null,
+      ids: null,
+      detail:
+        '"Vendor ids" 라벨이 없고, 숫자-only Values(vendor) 블록도 찾지 못했습니다.',
+    };
+  }
+  if (numericBlocks.length > 1) {
+    return {
+      ok: false,
+      count: null,
+      ids: null,
+      detail: `숫자-only Values 블록이 ${numericBlocks.length}개입니다. vendor id 필터는 하나만 허용됩니다.`,
+    };
+  }
+  const tokens = tokensInBlock(numericBlocks[0]);
+  return {
+    ok: true,
+    count: tokens.length,
+    ids: tokens,
+    detail: `Clause/Values UI — Vendor 라벨 없이 숫자-only Values 단일 블록: ${tokens.length}개: ${tokens.join(", ")}`,
+  };
+}
+
+/**
+ * "Vertical type(s)" 이후 첫 "is" 다음 — Values…Values 안쪽 또는 레거시 한 줄 값.
+ */
+function extractVerticalTypeValuesInner(section) {
+  const labelRe = /vertical\s*types?\b/i;
+  const lm = section.match(labelRe);
+  if (!lm || lm.index == null) return { inner: null, mode: "none" };
+  let rest = section.slice(lm.index + lm[0].length);
+  const isM = rest.match(/\bis\b/i);
+  if (!isM) return { inner: null, mode: "none" };
+  rest = rest.slice(isM.index + isM[0].length);
+  const vOpen = rest.match(/\bValues\b/i);
+  if (vOpen) {
+    const after = rest.slice(vOpen.index + vOpen[0].length);
+    const vClose = after.match(/\bValues\b/i);
+    if (!vClose) return { inner: null, mode: "none" };
+    return {
+      inner: after.slice(0, vClose.index).trim(),
+      mode: "values",
+    };
+  }
+  const stop = rest.search(
+    /\n\s*(?:Delivery types?|Vendor ids|Add filter|Vertical\s*types?\b)/i
+  );
+  const raw = (stop === -1 ? rest : rest.slice(0, stop)).trim();
+  return { inner: raw || null, mode: raw ? "legacy" : "none" };
+}
+
+function isStrictVerticalOnlyToken(inner) {
+  const t = inner.trim();
+  if (!t) {
+    return { ok: false, reason: "Vertical type(s) is 다음 값이 비어 있습니다." };
+  }
+  if (/^shop$/i.test(t)) return { ok: true, value: "shop" };
+  if (/^restaurant$/i.test(t)) return { ok: true, value: "restaurant" };
+  return {
+    ok: false,
+    reason:
+      "Vertical type(s) is Values(또는 한 줄 값)에는 shop 또는 restaurant만 단독으로 와야 합니다. 다른 값과 함께 올 수 없습니다.",
+  };
+}
+
+function checkVerticalTypeStrict(section, blocks) {
+  const { inner, mode } = extractVerticalTypeValuesInner(section);
+  if (inner == null || inner === "") {
+    return {
+      ok: false,
+      detail:
+        'Vendor group filters에서 "Vertical type(s)" · "is" 다음에 shop/restaurant(또는 해당 Values)를 찾지 못했습니다.',
+    };
+  }
+  const strict = isStrictVerticalOnlyToken(inner);
+  if (!strict.ok) {
+    return { ok: false, detail: strict.reason };
+  }
+  const want = strict.value.toLowerCase();
+
+  const shopLikeBlocks = blocks.filter((b) => {
+    const x = b.trim();
+    return /^shop$/i.test(x) || /^restaurant$/i.test(x);
+  });
+
+  for (const b of shopLikeBlocks) {
+    if (b.trim().toLowerCase() !== want) {
+      return {
+        ok: false,
+        detail: `Vertical은 ${want}인데, 다른 Values 블록에 ${b.trim()}가 있습니다.`,
       };
     }
   }
-  return null;
-}
 
-function verticalShopFromClauseValuesBlocks(blocks) {
-  return blocks.some((inner) => /^shop$/i.test(inner.trim()));
-}
+  if (shopLikeBlocks.length > 1) {
+    return {
+      ok: false,
+      detail: `shop/restaurant이 들어간 Values 블록이 ${shopLikeBlocks.length}개입니다. Vertical type(s) is 에 해당하는 블록만 허용됩니다.`,
+    };
+  }
 
-function platformDeliveryFromClauseValuesBlocks(blocks) {
-  return blocks.some((inner) => /^PLATFORM[\s_-]+DELIVERY$/i.test(inner.trim()));
+  if (mode === "values") {
+    if (shopLikeBlocks.length !== 1) {
+      return {
+        ok: false,
+        detail:
+          shopLikeBlocks.length === 0
+            ? "Vertical type(s) is Values 텍스트는 있으나 Clause/Values 목록에서 shop/restaurant 블록을 찾지 못했습니다."
+            : "Vertical type(s) is 에 해당하는 Values는 하나만 있어야 합니다.",
+      };
+    }
+  }
+
+  if (mode === "legacy" && shopLikeBlocks.length > 0) {
+    return {
+      ok: false,
+      detail:
+        "Vertical type(s) is 는 레거시 한 줄인데, Clause/Values 블록에도 shop/restaurant가 있습니다.",
+    };
+  }
+
+  const detail =
+    want === "shop"
+      ? mode === "values"
+        ? "Vertical type(s) is — Values에 shop만 있고, 다른 Values 블록에는 vertical 값이 없습니다."
+        : "Vertical type(s) is shop 확인됨 (레거시 UI)."
+      : mode === "values"
+        ? `Vertical type(s) is — Values에 ${want}만 있고, 다른 Values 블록에는 vertical 값이 없습니다.`
+        : `Vertical type(s) is ${want} 확인됨 (레거시 UI).`;
+
+  return { ok: true, detail };
 }
 
 function checkDeliveryTypesPlatform(section) {
@@ -106,40 +422,6 @@ function sliceVendorGroupFiltersSection(fullText) {
   return t.slice(m.index);
 }
 
-function parseVendorIdsCountAfterIs(fromVendorGroupFilters) {
-  const re = /vendor\s*ids[\s\S]{0,400}?\bis\b/i;
-  const m = fromVendorGroupFilters.match(re);
-  if (!m || m.index == null) {
-    return {
-      ok: false,
-      count: null,
-      ids: null,
-      detail: '"Vendor ids" · "is" 패턴을 찾지 못했습니다.',
-    };
-  }
-  const afterIs = fromVendorGroupFilters.slice(m.index + m[0].length);
-  const stop = afterIs.search(NEXT_FILTER_AFTER_VALUE);
-  const raw = (stop === -1 ? afterIs : afterIs.slice(0, stop)).trim();
-  if (!raw) {
-    return {
-      ok: true,
-      count: 0,
-      ids: [],
-      detail: "Vendor ids is 다음에 값이 없습니다 (0개).",
-    };
-  }
-  const parts = raw
-    .split(/[,\n]+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-  return {
-    ok: true,
-    count: parts.length,
-    ids: parts,
-    detail: `Vendor ids is 다음 vendor id(그룹) 개수: ${parts.length}개: ${parts.join(", ")}`,
-  };
-}
-
 export function validateVendorGroupFilters(iframeText) {
   const t = iframeText || "";
   if (!t.trim()) {
@@ -159,31 +441,15 @@ export function validateVendorGroupFilters(iframeText) {
   }
 
   const blocks = extractValuesBlockContents(section);
-  const viaVendor = vendorIdsFromClauseValuesBlocks(blocks);
-  const vendorIds = viaVendor || parseVendorIdsCountAfterIs(section);
+  const vendorIds = checkVendorIdsStrict(section, blocks);
 
-  const verticalFromBlocks = verticalShopFromClauseValuesBlocks(blocks);
-  const verticalOk = verticalFromBlocks || VERTICAL_TYPE_IS_SHOP.test(section);
-  const verticalDetail = verticalFromBlocks
-    ? "Clause/Values UI — shop 확인됨."
-    : verticalOk
-      ? "Vertical type is shop 확인됨."
-      : 'Vendor group filters 이후 shop(Vertical) 또는 "Vertical type" · "is" · "shop" 조합을 찾지 못했습니다.';
+  const verticalCheck = checkVerticalTypeStrict(section, blocks);
+  const verticalOk = verticalCheck.ok;
+  const verticalDetail = verticalCheck.detail;
 
-  const platformFromBlocks = platformDeliveryFromClauseValuesBlocks(blocks);
-  const deliveryLegacy = checkDeliveryTypesPlatform(section);
-  const deliveryOk = platformFromBlocks || deliveryLegacy.ok;
-  let deliveryDetail;
-  if (platformFromBlocks) {
-    deliveryDetail = "Clause/Values UI — PLATFORM_DELIVERY 확인됨.";
-  } else if (deliveryLegacy.ok) {
-    deliveryDetail = deliveryLegacy.detail;
-  } else if (blocks.length >= 2) {
-    deliveryDetail =
-      "Clause/Values 블록에 PLATFORM_DELIVERY가 없고, 레거시 Delivery types 라벨 패턴도 없습니다.";
-  } else {
-    deliveryDetail = deliveryLegacy.detail;
-  }
+  const deliveryCheck = checkDeliveryTypeStrict(section, blocks);
+  const deliveryOk = deliveryCheck.ok;
+  const deliveryDetail = deliveryCheck.detail;
 
   const ok = verticalOk && vendorIds.ok && deliveryOk;
   const checks = {
