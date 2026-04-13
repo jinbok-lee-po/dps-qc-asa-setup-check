@@ -7,7 +7,8 @@
  *
  * Delivery / Vendor id: Vertical 과 같이 해당 라벨·is·Values(또는 레거시 한 줄)에 묶어 검증.
  * 라벨 없는 Clause/Values 전용 UI 는 PLATFORM_DELIVERY·숫자-only Values 각각 단일 블록만 허용.
- * OD·Bmart/Food 규칙: Vertical 은 is shop / is restaurant, Delivery 는 is PLATFORM_DELIVERY 만 통과(is not → NG).
+ * OD 규칙: Delivery 는 is PLATFORM_DELIVERY 만 통과(is not → NG).
+ * Vertical: 옵션 verticalSegment — 커머스(bmart) → is shop, 푸드(food) → is restaurants(단수 restaurant 미사용).
  * Vendor id 토큰은 숫자만 허용.
  * is / is not: clauseAfterLabel + Values 직전 lookback. innerText 에서 is·not 이 줄/ NBSP 로 갈라질 수 있음.
  */
@@ -16,6 +17,45 @@ const VENDOR_GROUP_MARK = /vendor\s+group\s+filters/i;
 const DELIVERY_TYPES_LABEL = /delivery\s+types?\b/i;
 const PLATFORM_DELIVERY_VALUE = /\bPLATFORM[\s_-]+DELIVERY\b/i;
 const NEXT_FILTER_AFTER_VALUE = /\n\s*(?:Delivery types?|Vertical type|Vendor ids|Add filter)\b/i;
+
+/** @typedef {'bmart' | 'food'} VerticalSegment */
+
+export function normalizeVerticalSegment(seg) {
+  const s = String(seg == null ? "bmart" : seg)
+    .trim()
+    .toLowerCase();
+  if (s === "food") return "food";
+  return "bmart";
+}
+
+function expectedVerticalToken(segment) {
+  return segment === "food" ? "restaurants" : "shop";
+}
+
+function verticalSegmentLabelKo(segment) {
+  return segment === "food" ? "푸드" : "커머스";
+}
+
+function wrongVerticalForSegmentDetail(want, segment) {
+  const exp = expectedVerticalToken(segment);
+  const lab = verticalSegmentLabelKo(segment);
+  const expLabel = exp === "shop" ? "shop" : "restaurants";
+  return `${lab} 검증 기준: Vertical은 ${expLabel}이어야 하는데 화면 값은 ${want}입니다.`;
+}
+
+function verticalIsNotFailDetail(want, segment) {
+  const lab = verticalSegmentLabelKo(segment);
+  const exp = expectedVerticalToken(segment);
+  const expWord = exp === "shop" ? "shop" : "restaurants";
+  return `Vertical type(s)가 is not ${want} 입니다. ${lab}는 is ${expWord}만 허용됩니다.`;
+}
+
+function verticalUnlabeledIsNotDetail(want, segment) {
+  const lab = verticalSegmentLabelKo(segment);
+  const exp = expectedVerticalToken(segment);
+  const expWord = exp === "shop" ? "shop" : "restaurants";
+  return `Clause/Values UI에서 Vertical이 is not ${want}으로 보입니다. ${lab}는 is ${expWord}만 허용됩니다.`;
+}
 
 /**
  * "Values" 와 다음 "Values" 사이 텍스트를 순서대로 수집.
@@ -73,6 +113,14 @@ function tokensInBlock(inner) {
     .flatMap((line) => line.split(","))
     .map((s) => s.trim())
     .filter(Boolean);
+}
+
+/** shop | restaurants 만 허용(푸드 UI 는 restaurants, 단수 restaurant 미사용) */
+function normalizeVerticalValueToken(inner) {
+  const t = inner.trim().toLowerCase();
+  if (t === "shop") return "shop";
+  if (t === "restaurants") return "restaurants";
+  return null;
 }
 
 /** 라벨 직후 가장 이른 is / is not (is·not 사이 NBSP·줄바꿈 허용) */
@@ -426,27 +474,32 @@ function isStrictVerticalOnlyToken(inner) {
   if (!t) {
     return { ok: false, reason: "Vertical type(s) is 다음 값이 비어 있습니다." };
   }
-  if (/^shop$/i.test(t)) return { ok: true, value: "shop" };
-  if (/^restaurant$/i.test(t)) return { ok: true, value: "restaurant" };
+  const norm = normalizeVerticalValueToken(t);
+  if (norm === "shop") return { ok: true, value: "shop" };
+  if (norm === "restaurants") return { ok: true, value: "restaurants" };
+  if (/^restaurant$/i.test(t.trim())) {
+    return {
+      ok: false,
+      reason:
+        "Vertical 값이 restaurant(단수)입니다. 푸드는 restaurants(복수)만 사용합니다.",
+    };
+  }
   return {
     ok: false,
     reason:
-      "Vertical type(s) is Values(또는 한 줄 값)에는 shop 또는 restaurant만 단독으로 와야 합니다. 다른 값과 함께 올 수 없습니다.",
+      "Vertical type(s) is Values(또는 한 줄 값)에는 shop 또는 restaurants만 단독으로 와야 합니다. 다른 값과 함께 올 수 없습니다.",
   };
 }
 
-function checkVerticalUnlabeledFallback(section, blocks) {
-  const shopLikeBlocks = blocks.filter((b) => {
-    const x = b.trim();
-    return /^shop$/i.test(x) || /^restaurant$/i.test(x);
-  });
+function checkVerticalUnlabeledFallback(section, blocks, verticalSegment) {
+  const shopLikeBlocks = blocks.filter((b) => normalizeVerticalValueToken(b) != null);
   if (shopLikeBlocks.length !== 1) {
     return {
       ok: false,
       detail:
         shopLikeBlocks.length === 0
-          ? '"Vertical type(s)" 라벨이 innerText에 없고, shop/restaurant 전용 Values 블록도 없습니다.'
-          : `Vertical 라벨 없음: shop/restaurant Values가 ${shopLikeBlocks.length}개입니다. 정확히 1개여야 합니다.`,
+          ? '"Vertical type(s)" 라벨이 innerText에 없고, shop/restaurants 전용 Values 블록도 없습니다.'
+          : `Vertical 라벨 없음: shop/restaurants Values가 ${shopLikeBlocks.length}개입니다. 정확히 1개여야 합니다.`,
       clause: "unlabeled",
       verticalToken: null,
     };
@@ -461,11 +514,17 @@ function checkVerticalUnlabeledFallback(section, blocks) {
     };
   }
   const want = strict.value.toLowerCase();
+  const exp = expectedVerticalToken(verticalSegment);
+  if (want !== exp) {
+    return {
+      ok: false,
+      detail: wrongVerticalForSegmentDetail(want, verticalSegment),
+      clause: "unlabeled",
+      verticalToken: want,
+    };
+  }
   const meta = extractValuesBlocksWithMeta(section);
-  const shopRow = meta.find(
-    (row) =>
-      /^shop$/i.test(row.inner.trim()) || /^restaurant$/i.test(row.inner.trim())
-  );
+  const shopRow = meta.find((row) => normalizeVerticalValueToken(row.inner) != null);
   const inferred = shopRow
     ? clauseOperatorNearestBefore(section, shopRow.openIndex)
     : null;
@@ -473,29 +532,27 @@ function checkVerticalUnlabeledFallback(section, blocks) {
   if (effClause === "is_not") {
     return {
       ok: false,
-      detail:
-        want === "shop"
-          ? "Clause/Values UI에서 Vertical이 is not shop으로 보입니다. Bmart는 is shop만 허용됩니다."
-          : `Clause/Values UI에서 Vertical이 is not ${want}로 보입니다. Food는 is restaurant, Bmart는 is shop만 허용됩니다.`,
+      detail: verticalUnlabeledIsNotDetail(want, verticalSegment),
       clause: "is_not",
       verticalToken: want,
     };
   }
+  const lab = verticalSegmentLabelKo(verticalSegment);
   return {
     ok: true,
     detail:
       want === "shop"
-        ? "Clause/Values UI — Vertical 라벨이 텍스트에 없음, shop 단일 Values (is 로 간주)."
-        : `Clause/Values UI — Vertical 라벨이 텍스트에 없음, ${want} 단일 Values (is 로 간주).`,
+        ? `Clause/Values UI — Vertical 라벨 없음, shop 단일 Values (is, ${lab} 기준).`
+        : `Clause/Values UI — Vertical 라벨 없음, ${want} 단일 Values (is, ${lab} 기준).`,
     clause: "is",
     verticalToken: want,
   };
 }
 
-function checkVerticalTypeStrict(section, blocks) {
+function checkVerticalTypeStrict(section, blocks, verticalSegment) {
   const labeled = extractVerticalTypeValuesInner(section);
   if (labeled.mode === "none" && labeled.clause == null) {
-    return checkVerticalUnlabeledFallback(section, blocks);
+    return checkVerticalUnlabeledFallback(section, blocks, verticalSegment);
   }
 
   const { inner, mode, clause } = labeled;
@@ -513,14 +570,21 @@ function checkVerticalTypeStrict(section, blocks) {
     return { ok: false, detail: strict.reason, clause, verticalToken: null };
   }
   const want = strict.value.toLowerCase();
+  const exp = expectedVerticalToken(verticalSegment);
+  if (want !== exp) {
+    return {
+      ok: false,
+      detail: wrongVerticalForSegmentDetail(want, verticalSegment),
+      clause,
+      verticalToken: want,
+    };
+  }
 
-  const shopLikeBlocks = blocks.filter((b) => {
-    const x = b.trim();
-    return /^shop$/i.test(x) || /^restaurant$/i.test(x);
-  });
+  const shopLikeBlocks = blocks.filter((b) => normalizeVerticalValueToken(b) != null);
 
   for (const b of shopLikeBlocks) {
-    if (b.trim().toLowerCase() !== want) {
+    const bNorm = normalizeVerticalValueToken(b);
+    if (bNorm !== want) {
       return {
         ok: false,
         detail: `Vertical은 ${want}인데, 다른 Values 블록에 ${b.trim()}가 있습니다.`,
@@ -533,7 +597,7 @@ function checkVerticalTypeStrict(section, blocks) {
   if (shopLikeBlocks.length > 1) {
     return {
       ok: false,
-      detail: `shop/restaurant이 들어간 Values 블록이 ${shopLikeBlocks.length}개입니다.`,
+        detail: `shop 또는 restaurants가 들어간 Values 블록이 ${shopLikeBlocks.length}개입니다.`,
       clause,
       verticalToken: null,
     };
@@ -546,7 +610,7 @@ function checkVerticalTypeStrict(section, blocks) {
           ok: false,
           detail:
             shopLikeBlocks.length === 0
-              ? "Vertical type(s) is not Values 와 목록의 shop/restaurant 블록이 맞지 않습니다."
+              ? "Vertical type(s) is not Values 와 목록의 shop/restaurants 블록이 맞지 않습니다."
               : "Vertical type(s) is not 에 해당하는 Values는 하나만 허용됩니다.",
           clause,
           verticalToken: null,
@@ -557,15 +621,12 @@ function checkVerticalTypeStrict(section, blocks) {
       return {
         ok: false,
         detail:
-          "Vertical type(s) is not 가 레거시인데 Clause/Values 에도 shop/restaurant 블록이 있습니다.",
+          "Vertical type(s) is not 가 레거시인데 Clause/Values 에도 shop/restaurants 블록이 있습니다.",
         clause,
         verticalToken: null,
       };
     }
-    const detail =
-      want === "shop"
-        ? "Vertical type(s)가 is not shop 입니다. Bmart는 is shop만 허용됩니다."
-        : `Vertical type(s)가 is not ${want} 입니다. Bmart는 is shop, Food는 is restaurant만 허용됩니다.`;
+    const detail = verticalIsNotFailDetail(want, verticalSegment);
     return { ok: false, detail, clause: "is_not", verticalToken: want };
   }
 
@@ -575,7 +636,7 @@ function checkVerticalTypeStrict(section, blocks) {
         ok: false,
         detail:
           shopLikeBlocks.length === 0
-            ? "Vertical type(s) is Values 텍스트는 있으나 Clause/Values 목록에서 shop/restaurant 블록을 찾지 못했습니다."
+              ? "Vertical type(s) is Values 텍스트는 있으나 Clause/Values 목록에서 shop/restaurants 블록을 찾지 못했습니다."
             : "Vertical type(s) is 에 해당하는 Values는 하나만 있어야 합니다.",
         clause,
         verticalToken: null,
@@ -587,20 +648,21 @@ function checkVerticalTypeStrict(section, blocks) {
     return {
       ok: false,
       detail:
-        "Vertical type(s) is 는 레거시 한 줄인데, Clause/Values 블록에도 shop/restaurant가 있습니다.",
+        "Vertical type(s) is 는 레거시 한 줄인데, Clause/Values 블록에도 shop/restaurants가 있습니다.",
       clause,
       verticalToken: null,
     };
   }
 
+  const lab = verticalSegmentLabelKo(verticalSegment);
   const detail =
     want === "shop"
       ? mode === "values"
-        ? "Vertical type(s) is — Values에 shop만 있고, 다른 Values 블록에는 vertical 값이 없습니다."
-        : "Vertical type(s) is shop 확인됨 (레거시 UI)."
+        ? `Vertical type(s) is — Values에 shop만 있고, 다른 Values 블록에는 vertical 값이 없습니다. (${lab} 기준)`
+        : `Vertical type(s) is shop 확인됨 (레거시 UI, ${lab} 기준).`
       : mode === "values"
-        ? `Vertical type(s) is — Values에 ${want}만 있고, 다른 Values 블록에는 vertical 값이 없습니다.`
-        : `Vertical type(s) is ${want} 확인됨 (레거시 UI).`;
+        ? `Vertical type(s) is — Values에 ${want}만 있고, 다른 Values 블록에는 vertical 값이 없습니다. (${lab} 기준)`
+        : `Vertical type(s) is ${want} 확인됨 (레거시 UI, ${lab} 기준).`;
 
   return { ok: true, detail, clause: "is", verticalToken: want };
 }
@@ -644,13 +706,19 @@ function sliceVendorGroupFiltersSection(fullText) {
   return t.slice(m.index);
 }
 
-export function validateVendorGroupFilters(iframeText) {
+/**
+ * @param {string} iframeText
+ * @param {{ verticalSegment?: VerticalSegment | string }} [options]
+ */
+export function validateVendorGroupFilters(iframeText, options) {
+  const verticalSegment = normalizeVerticalSegment(options?.verticalSegment);
   const t = iframeText || "";
   if (!t.trim()) {
     return {
       ok: false,
       checks: null,
       detail: "iframe 본문 텍스트가 비어 있습니다.",
+      verticalSegment,
     };
   }
   const section = sliceVendorGroupFiltersSection(t);
@@ -659,13 +727,14 @@ export function validateVendorGroupFilters(iframeText) {
       ok: false,
       checks: null,
       detail: '화면에 "Vendor group filters" 문구가 없습니다.',
+      verticalSegment,
     };
   }
 
   const blocks = extractValuesBlockContents(section);
   const vendorIds = checkVendorIdsStrict(section, blocks);
 
-  const verticalCheck = checkVerticalTypeStrict(section, blocks);
+  const verticalCheck = checkVerticalTypeStrict(section, blocks, verticalSegment);
   const verticalOk = verticalCheck.ok;
   const verticalDetail = verticalCheck.detail;
 
@@ -700,7 +769,7 @@ export function validateVendorGroupFilters(iframeText) {
     checks.deliveryTypesPlatform.detail,
   ].join(" | ");
 
-  return { ok, checks, detail };
+  return { ok, checks, detail, verticalSegment };
 }
 
 function verticalReportValue(verticalCheck) {
@@ -713,11 +782,17 @@ function verticalReportValue(verticalCheck) {
 /**
  * 익스텐션 content.js `buildReportText` 와 동일한 문자열 (문구 수정 시 양쪽 동기화).
  * @param {Array<{ experimentId: number, ok?: boolean, detail?: string, checks?: object, error?: string }>} results
+ * @param {{ verticalSegment?: VerticalSegment | string }} [reportOpts]
  */
-export function buildVendorGroupFiltersReportText(results) {
+export function buildVendorGroupFiltersReportText(results, reportOpts) {
+  const seg = normalizeVerticalSegment(reportOpts?.verticalSegment);
+  const segLine =
+    seg === "food"
+      ? "(1) Vertical — 푸드 기준: is restaurants"
+      : "(1) Vertical — 커머스 기준: is shop";
   const lines = [];
   lines.push("=== 검증 항목 ===");
-  lines.push("(1) Vertical 설정이 올바르게 되어있는지 (Bmart: shop, Food: restaurant)");
+  lines.push(segLine);
   lines.push("(2) delivery type이 OD(PLATFORM_DELIVERY)로 설정되어 있는지");
   lines.push("(3) ASA ID별 vendor id 개수·목록");
   lines.push("");
@@ -762,6 +837,16 @@ export function buildVendorGroupFiltersReportText(results) {
     `요약: 통과 ${pass} · 규칙 불통과 ${failRule} · 수집 실패 ${failTech} (총 ${results.length}건)`
   );
   lines.push("");
-  lines.push(JSON.stringify({ results, summary: { pass, failRule, failTech, total: results.length } }, null, 2));
+  lines.push(
+    JSON.stringify(
+      {
+        verticalSegment: seg,
+        results,
+        summary: { pass, failRule, failTech, total: results.length },
+      },
+      null,
+      2
+    )
+  );
   return lines.join("\n");
 }

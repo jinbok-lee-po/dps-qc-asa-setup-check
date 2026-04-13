@@ -243,19 +243,82 @@ assert(r.checks.deliveryTypesPlatform.ok === false, "delivery NG inferred");
 assert(r.checks.deliveryTypesPlatform.clause === "is_not", "delivery is_not inferred");
 console.log("OK: 라벨 없이 is/not 줄바꿈 (485 innerText 유사) → 불통과(예상)");
 
+const fullMockRestaurants = fullMock.replace(
+  /Vertical type\nis\nshop/,
+  "Vertical type\nis\nrestaurants"
+);
+r = validateVendorGroupFilters(fullMockRestaurants);
+assert(r.ok === false, "비마트 기본값 + restaurants Vertical → NG");
+assert(r.checks.verticalTypeShop.ok === false, "bmart mismatch");
+
+r = validateVendorGroupFilters(fullMockRestaurants, { verticalSegment: "food" });
+assert(r.ok === true, "푸드 + restaurants 통과");
+assert(r.checks.verticalTypeShop.verticalToken === "restaurants", "token restaurants");
+
+r = validateVendorGroupFilters(fullMock, { verticalSegment: "food" });
+assert(r.ok === false, "푸드 + shop → NG");
+console.log("OK: verticalSegment bmart/food 기대값 분기");
+
+r = validateVendorGroupFilters(PORTAL_CLAUSE_VALUES_SAMPLE, { verticalSegment: "food" });
+assert(r.ok === false, "포털 샘플 shop 을 푸드로 검사하면 NG");
+
+const FOOD_PORTAL = PORTAL_CLAUSE_VALUES_SAMPLE.replace(
+  /(Vertical type[\s\S]*?Values\n)shop(\nValues)/i,
+  "$1restaurants$2"
+);
+r = validateVendorGroupFilters(FOOD_PORTAL, { verticalSegment: "food" });
+assert(r.ok === true, "푸드 포털 샘플 통과");
+console.log("OK: 푸드 포털 샘플 (restaurants)");
+
+r = validateVendorGroupFilters(
+  "Vendor group filters\nVertical type\nis\nrestaurant\nDelivery types\nis\nPLATFORM_DELIVERY\nVendor ids\nis\n1",
+  { verticalSegment: "food" }
+);
+assert(r.ok === false, "푸드인데 restaurant 단수 → 미사용 토큰");
+assert(
+  (r.checks.verticalTypeShop.detail || "").includes("restaurants") ||
+    (r.checks.verticalTypeShop.detail || "").includes("복수"),
+  "단수 restaurant 안내"
+);
+
+r = validateVendorGroupFilters(
+  "Vendor group filters\nVertical type\nis\nrestaurants\nDelivery types\nis\nPLATFORM_DELIVERY\nVendor ids\nis\n1",
+  { verticalSegment: "food" }
+);
+assert(r.ok === true, "Values restaurants 단일 허용(푸드)");
+console.log("OK: Vertical 값 restaurants (푸드)");
+
+r = validateVendorGroupFilters(SHOP_NO_LABEL, { verticalSegment: "food" });
+assert(r.ok === false, "라벨 없이 shop 인데 푸드 선택 → NG");
+console.log("OK: SHOP_NO_LABEL / restaurants 엣지");
+
 {
   const v = validateVendorGroupFilters(PORTAL_CLAUSE_VALUES_SAMPLE);
-  const report = buildVendorGroupFiltersReportText([
-    { experimentId: 483, ok: v.ok, detail: v.detail, checks: v.checks },
-  ]);
+  const report = buildVendorGroupFiltersReportText(
+    [{ experimentId: 483, ok: v.ok, detail: v.detail, checks: v.checks }],
+    { verticalSegment: "bmart" }
+  );
   assert(report.includes("=== 검증 항목 ==="), "report header");
+  assert(report.includes("(1) Vertical — 커머스 기준: is shop"), "report vertical criterion");
   assert(report.includes("실험 ID: 483 - 정상"), "report experiment status");
   assert(report.includes("(1) Vertical\tOK\tshop"), "report vertical line");
   assert(report.includes("(2) delivery\tOK\tPLATFORM_DELIVERY"), "report delivery line");
   assert(report.includes("(3) Vendor id\t2개\t99999999, 99999998"), "report vendor line");
   assert(report.includes("요약: 통과 1"), "report summary");
+  assert(report.includes('"verticalSegment": "bmart"'), "report json segment");
   assert(report.includes('"experimentId": 483'), "report trailing JSON");
-  console.log("OK: CDP/익스텐션 공통 리포트 문자열");
+  console.log("OK: CDP/익스텐션 공통 리포트 문자열 (비마트)");
+}
+
+{
+  const vf = validateVendorGroupFilters(FOOD_PORTAL, { verticalSegment: "food" });
+  const reportF = buildVendorGroupFiltersReportText(
+    [{ experimentId: 484, ok: vf.ok, detail: vf.detail, checks: vf.checks }],
+    { verticalSegment: "food" }
+  );
+  assert(reportF.includes("(1) Vertical — 푸드 기준: is restaurants"), "report food criterion");
+  assert(reportF.includes('"verticalSegment": "food"'), "report json food");
+  console.log("OK: 리포트 헤더 푸드 기준");
 }
 
 console.log("\n전부 통과.");

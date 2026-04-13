@@ -11,8 +11,18 @@
  *   node scripts/run-vendor-group-cdp.mjs 461
  *   node scripts/run-vendor-group-cdp.mjs 461,462 --target 6BE827FA
  *   node scripts/run-vendor-group-cdp.mjs 483 --no-overlay   # stdout만 (오버레이 없음)
+ *   node scripts/run-vendor-group-cdp.mjs 461 --vertical food  # 푸드 → restaurants 검증
  *
- * 환경변수: CHROME_CDP_SKILL (cdp.mjs 가 있는 스킬 루트), DPS_ZONES_* 폴링 옵션
+ * 환경변수: CHROME_CDP_SKILL (cdp.mjs 가 있는 스킬 루트)
+ *   DPS_ZONES_NAV_SETTLE_MS, DPS_ZONES_POLL_MS, DPS_ZONES_MAX_MS — iframe 라우트·본문 폴링
+ *   DPS_LIST_ROUTE_WAIT_MS, DPS_LIST_ROUTE_POLL_MS — eval 내 iframe 목록 해시 폴링(기본 10000 / 80)
+ *   DPS_CDP_BETWEEN_MS — 실험 ID 바꿀 때 추가 대기(기본 700ms), 연속 CDP 시 UI 안정화
+ *
+ * 접속·리프레시 (익스텐션 content.js 와 맞춤):
+ *   eval: 상단 history 를 먼저 목록(#/automatic-assignment)으로 맞춘 뒤 iframe 목록 replace,
+ *   iframe location.hash 가 목록인지 폴링(최대 DPS_LIST_ROUTE_WAIT_MS), 실패 시 about:blank 후 재시도,
+ *   그다음 상단 edit 맞춤 후 iframe 은 contentWindow.location.replace(edit) 만 (익스텐션 v0.5 과 동일).
+ *   이후 fetchIframeTextForExperiment 가 Vendor group filters 가 보일 때까지 폴링.
  */
 
 import { spawnSync } from "child_process";
@@ -22,12 +32,111 @@ import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import {
   buildVendorGroupFiltersReportText,
+  normalizeVerticalSegment,
   validateVendorGroupFilters,
 } from "./vendor-group-filters-logic.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = join(__dirname, "..");
 const AUTOMATIC_ASSIGNMENT_HASH_PREFIX = "#/automatic-assignment";
+const PORTAL_ORIGIN = "https://portal.woowahan.com";
+const PORTAL_BASE_PATH = "/pv2/kr/p/logistics-dynamic-pricing";
+
+/** 익스텐션: syncTop 목록 → iframe 목록 → 해시 폴링 → (폴백 about:blank) → syncTop+iframe edit */
+function navLikeExtensionJs(experimentId) {
+  const id = JSON.stringify(String(experimentId));
+  const listWait = Number(process.env.DPS_LIST_ROUTE_WAIT_MS) || 10000;
+  const listPoll = Number(process.env.DPS_LIST_ROUTE_POLL_MS) || 80;
+  const stabilize = Number(process.env.DPS_LIST_STABILIZE_MS) || 120;
+  return `(() => {
+    const id = ${id};
+    const ORIGIN = ${JSON.stringify(PORTAL_ORIGIN)};
+    const BASE_PATH = ${JSON.stringify(PORTAL_BASE_PATH)};
+    const listHash = "#/automatic-assignment";
+    const editHash = "#/automatic-assignment/" + id + "/edit";
+    const listWant = listHash.toLowerCase();
+    const f = document.querySelector("iframe.pluginIframe");
+    if (!f || !f.contentWindow) return JSON.stringify({ ok: false, error: "no iframe.pluginIframe" });
+    function normHash(href) {
+      try {
+        const u = new URL(href);
+        let h = (u.hash || "").split("?")[0];
+        while (h.length > 1 && h.endsWith("/")) h = h.slice(0, -1);
+        return (h || "").toLowerCase();
+      } catch (e) {
+        return "";
+      }
+    }
+    function isListHref(href) {
+      return normHash(href) === listWant;
+    }
+    function spin(ms) {
+      const end = Date.now() + ms;
+      while (Date.now() < end) {}
+    }
+    function readIframeHref() {
+      try {
+        return (f.contentWindow && f.contentWindow.location && f.contentWindow.location.href) || "";
+      } catch (e) {
+        return "";
+      }
+    }
+    function waitListRoute() {
+      const dl = Date.now() + ${listWait};
+      while (Date.now() < dl) {
+        if (isListHref(readIframeHref())) return true;
+        spin(${listPoll});
+      }
+      return false;
+    }
+    try {
+      const path = (window.location.pathname || "").split("?")[0];
+      const topList = window.location.origin + path + listHash;
+      const topEdit = window.location.origin + path + editHash;
+      try {
+        history.replaceState(null, "", topList);
+      } catch (e1) {
+        window.location.hash = listHash;
+      }
+      f.contentWindow.location.replace(ORIGIN + BASE_PATH + listHash);
+      let ok = waitListRoute();
+      if (!ok) {
+        try {
+          f.contentWindow.location.replace("about:blank");
+          const bdl = Date.now() + 5000;
+          while (Date.now() < bdl) {
+            const bh = readIframeHref();
+            if (bh.indexOf("about:blank") === 0) break;
+            spin(50);
+          }
+        } catch (e2) {}
+        try {
+          history.replaceState(null, "", topList);
+        } catch (e3) {
+          window.location.hash = listHash;
+        }
+        f.contentWindow.location.replace(ORIGIN + BASE_PATH + listHash);
+        ok = waitListRoute();
+        if (!ok) {
+          return JSON.stringify({
+            ok: false,
+            error: "iframe did not reach #/automatic-assignment (after about:blank reset)",
+          });
+        }
+      }
+      spin(${stabilize});
+      try {
+        history.replaceState(null, "", topEdit);
+      } catch (e4) {
+        window.location.hash = editHash;
+      }
+      f.contentWindow.location.replace(ORIGIN + BASE_PATH + editHash);
+      return JSON.stringify({ ok: true });
+    } catch (e) {
+      return JSON.stringify({ ok: false, error: "nav: " + e });
+    }
+  })()`;
+}
 
 function resolveCdpRoot() {
   const env = process.env.CHROME_CDP_SKILL?.trim();
@@ -83,22 +192,6 @@ function resolveTargetPrefix(cdpRoot, targetPrefix) {
   }
   console.error(`(자동 선택 타겟 접두사: ${found})`);
   return found;
-}
-
-function navPluginIframeToEditJs(experimentId) {
-  const hash = `${AUTOMATIC_ASSIGNMENT_HASH_PREFIX}/${experimentId}/edit`;
-  return `(() => {
-    const base = "https://portal.woowahan.com/pv2/kr/p/logistics-dynamic-pricing";
-    const hash = ${JSON.stringify(hash)};
-    const f = document.querySelector("iframe.pluginIframe");
-    if (!f || !f.contentWindow) return JSON.stringify({ ok: false, error: "no iframe.pluginIframe" });
-    try {
-      f.contentWindow.location.replace(base + hash);
-      return JSON.stringify({ ok: true });
-    } catch (e) {
-      return JSON.stringify({ ok: false, error: "iframe nav: " + e });
-    }
-  })()`;
 }
 
 function extractIframeTextWhenRouteJs(expectedId) {
@@ -158,19 +251,26 @@ function sleepSync(ms) {
 
 function fetchIframeTextForExperiment(cdpRoot, targetPrefix, experimentId) {
   const id = String(experimentId);
-  const url = `https://portal.woowahan.com/pv2/kr/p/logistics-dynamic-pricing${AUTOMATIC_ASSIGNMENT_HASH_PREFIX}/${id}/edit`;
+  const url = `${PORTAL_ORIGIN}${PORTAL_BASE_PATH}${AUTOMATIC_ASSIGNMENT_HASH_PREFIX}/${id}/edit`;
   runCdp(cdpRoot, ["nav", targetPrefix, url]);
-  parseIframeNavResult(runCdp(cdpRoot, ["eval", targetPrefix, navPluginIframeToEditJs(id)]));
+  parseIframeNavResult(runCdp(cdpRoot, ["eval", targetPrefix, navLikeExtensionJs(id)]));
   const settleMs = Number(process.env.DPS_ZONES_NAV_SETTLE_MS) || 400;
   const pollMs = Number(process.env.DPS_ZONES_POLL_MS) || 600;
   const maxMs = Number(process.env.DPS_ZONES_MAX_MS) || 45000;
+  const vendorMark = /vendor\s*group\s*filters/i;
   sleepSync(settleMs);
   const deadline = Date.now() + maxMs;
-  let lastErr = "timeout waiting for iframe route + body text";
+  let lastErr = "timeout waiting for iframe route + body + Vendor group filters";
   while (Date.now() < deadline) {
     try {
       const evalOut = runCdp(cdpRoot, ["eval", targetPrefix, extractIframeTextWhenRouteJs(id)]);
-      return parseEvalTextResult(evalOut);
+      const text = parseEvalTextResult(evalOut);
+      if (!vendorMark.test(text)) {
+        lastErr = "iframe innerText 에 아직 Vendor group filters 없음 (로딩 대기)";
+        sleepSync(pollMs);
+        continue;
+      }
+      return text;
     } catch (e) {
       lastErr = e.message || String(e);
       sleepSync(pollMs);
@@ -284,10 +384,16 @@ function parseArgs(argv) {
   const ids = [];
   let targetPrefix = "";
   let noOverlay = false;
+  let verticalRaw = "bmart";
   const rest = argv.slice(2);
   for (let i = 0; i < rest.length; i++) {
     if (rest[i] === "--target") {
       targetPrefix = rest[i + 1] || "";
+      i++;
+      continue;
+    }
+    if (rest[i] === "--vertical") {
+      verticalRaw = rest[i + 1] || "bmart";
       i++;
       continue;
     }
@@ -303,7 +409,13 @@ function parseArgs(argv) {
     }
   }
   if (ids.length === 0) throw new Error("실험 ID를 인자로 주세요. 예: node scripts/run-vendor-group-cdp.mjs 461");
-  return { ids: [...new Set(ids)].sort((a, b) => a - b), targetPrefix, noOverlay };
+  const verticalSegment = normalizeVerticalSegment(verticalRaw);
+  return {
+    ids: [...new Set(ids)].sort((a, b) => a - b),
+    targetPrefix,
+    noOverlay,
+    verticalSegment,
+  };
 }
 
 function main() {
@@ -324,14 +436,22 @@ function main() {
   }
 
   const targetPrefix = resolveTargetPrefix(cdpRoot, parsed.targetPrefix);
+  console.error(
+    `(Vertical 구분: ${parsed.verticalSegment === "food" ? "푸드 → restaurants" : "커머스 → shop"})`
+  );
 
   /** @type {object[]} */
   const results = [];
-  for (const experimentId of parsed.ids) {
+  const betweenMs = Number(process.env.DPS_CDP_BETWEEN_MS) || 700;
+  for (let i = 0; i < parsed.ids.length; i++) {
+    const experimentId = parsed.ids[i];
+    if (i > 0) sleepSync(betweenMs);
     console.error(`\n--- 실험 ${experimentId} (CDP) ---`);
     try {
       const text = fetchIframeTextForExperiment(cdpRoot, targetPrefix, experimentId);
-      const v = validateVendorGroupFilters(text);
+      const v = validateVendorGroupFilters(text, {
+        verticalSegment: parsed.verticalSegment,
+      });
       results.push({
         experimentId,
         ok: v.ok,
@@ -344,7 +464,9 @@ function main() {
       process.exitCode = 1;
     }
   }
-  const reportText = buildVendorGroupFiltersReportText(results);
+  const reportText = buildVendorGroupFiltersReportText(results, {
+    verticalSegment: parsed.verticalSegment,
+  });
   console.log(reportText);
 
   const skipOverlay =

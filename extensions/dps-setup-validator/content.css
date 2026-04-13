@@ -116,6 +116,50 @@
   min-height: 0;
 }
 
+#dps-commerce-validator-panel .dps-segment-hint {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #495057;
+  background: #e7f1ff;
+  border: 1px solid #b6d4fe;
+  border-radius: 8px;
+}
+
+#dps-commerce-validator-panel .dps-vertical-field {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border: 1px solid #dee2e6;
+  border-radius: 8px;
+  background: #fff;
+}
+
+#dps-commerce-validator-panel .dps-vertical-field legend {
+  font-weight: 700;
+  font-size: 13px;
+  padding: 0 4px;
+}
+
+#dps-commerce-validator-panel .dps-radio-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: 13px;
+  cursor: pointer;
+  line-height: 1.35;
+}
+
+#dps-commerce-validator-panel .dps-radio-line:first-of-type {
+  margin-top: 4px;
+}
+
+#dps-commerce-validator-panel .dps-radio-line input {
+  margin-top: 2px;
+  flex-shrink: 0;
+}
+
 #dps-commerce-validator-panel label.dps-label {
   display: block;
   font-weight: 600;

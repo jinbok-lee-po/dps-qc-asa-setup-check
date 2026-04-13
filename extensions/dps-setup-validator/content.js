@@ -1,8 +1,24 @@
 (() => {
-  const VERSION = "0.3.5";
+  /**
+   * 접속·리프레시 정책 (레포 scripts/run-vendor-group-cdp.mjs 와 동일 취지)
+   *
+   * - 매 실험마다 상단 주소를 먼저 목록(#/automatic-assignment)으로 맞춘 뒤 iframe 도 목록으로 replace,
+   *   iframe 해시가 실제로 목록인지 폴링(LIST_ROUTE_WAIT_MS) — 고정 sleep 만으로는 SPA 가 전환 안 하는 경우가 있음.
+   *   목록 진입 실패 시 about:blank 로 문서를 비운 뒤 목록→edit 재시도.
+   * - 목록 확인 후 syncTopLocationToEdit + iframe contentWindow.location.replace(edit) 만 (src/reload 없음).
+   * - edit URL 일치 후 innerText 에 Vendor group filters 가 보일 때까지 폴링.
+   * - 배치 시 실험 사이 BETWEEN_EXPERIMENTS_MS 간격.
+   */
+  const VERSION = "0.5.0";
   const POLL_MS = 600;
   const MAX_MS = 45000;
   const NAV_SETTLE_MS = 400;
+  /** iframe 이 #/automatic-assignment 로 바뀔 때까지 최대 대기 */
+  const LIST_ROUTE_WAIT_MS = 10000;
+  const LIST_ROUTE_POLL_MS = 80;
+  /** 목록 라우트 확인 후 edit 로 넘어가기 전 짧은 안정화 */
+  const LIST_STABILIZE_MS = 120;
+  const BETWEEN_EXPERIMENTS_MS = 700;
   const BASE_PATH = "/pv2/kr/p/logistics-dynamic-pricing";
   const ORIGIN = "https://portal.woowahan.com";
   const COMMERCE_HASH_PREFIX = "#/automatic-assignment";
@@ -12,6 +28,44 @@
   const DELIVERY_TYPES_LABEL = /delivery\s+types?\b/i;
   const PLATFORM_DELIVERY_VALUE = /\bPLATFORM[\s_-]+DELIVERY\b/i;
   const NEXT_FILTER_AFTER_VALUE = /\n\s*(?:Delivery types?|Vertical type|Vendor ids|Add filter)\b/i;
+  const STORAGE_VERTICAL = "dpsCommerceVerticalSegment";
+
+  function normalizeVerticalSegment(seg) {
+    const s = String(seg == null ? "bmart" : seg)
+      .trim()
+      .toLowerCase();
+    if (s === "food") return "food";
+    return "bmart";
+  }
+
+  function expectedVerticalToken(segment) {
+    return segment === "food" ? "restaurants" : "shop";
+  }
+
+  function verticalSegmentLabelKo(segment) {
+    return segment === "food" ? "푸드" : "커머스";
+  }
+
+  function wrongVerticalForSegmentDetail(want, segment) {
+    const exp = expectedVerticalToken(segment);
+    const lab = verticalSegmentLabelKo(segment);
+    const expLabel = exp === "shop" ? "shop" : "restaurants";
+    return `${lab} 검증 기준: Vertical은 ${expLabel}이어야 하는데 화면 값은 ${want}입니다.`;
+  }
+
+  function verticalIsNotFailDetail(want, segment) {
+    const lab = verticalSegmentLabelKo(segment);
+    const exp = expectedVerticalToken(segment);
+    const expWord = exp === "shop" ? "shop" : "restaurants";
+    return `Vertical type(s)가 is not ${want} 입니다. ${lab}는 is ${expWord}만 허용됩니다.`;
+  }
+
+  function verticalUnlabeledIsNotDetail(want, segment) {
+    const lab = verticalSegmentLabelKo(segment);
+    const exp = expectedVerticalToken(segment);
+    const expWord = exp === "shop" ? "shop" : "restaurants";
+    return `Clause/Values UI에서 Vertical이 is not ${want}으로 보입니다. ${lab}는 is ${expWord}만 허용됩니다.`;
+  }
 
   function extractValuesBlockContents(section) {
     return extractValuesBlocksWithMeta(section).map((x) => x.inner);
@@ -66,6 +120,13 @@
       .flatMap((line) => line.split(","))
       .map((s) => s.trim())
       .filter(Boolean);
+  }
+
+  function normalizeVerticalValueToken(inner) {
+    const t = inner.trim().toLowerCase();
+    if (t === "shop") return "shop";
+    if (t === "restaurants") return "restaurants";
+    return null;
   }
 
   /** 라벨 직후 가장 이른 is / is not (is·not 사이 NBSP·줄바꿈 허용) */
@@ -416,27 +477,32 @@
     if (!t) {
       return { ok: false, reason: "Vertical type(s) is 다음 값이 비어 있습니다." };
     }
-    if (/^shop$/i.test(t)) return { ok: true, value: "shop" };
-    if (/^restaurant$/i.test(t)) return { ok: true, value: "restaurant" };
+    const norm = normalizeVerticalValueToken(t);
+    if (norm === "shop") return { ok: true, value: "shop" };
+    if (norm === "restaurants") return { ok: true, value: "restaurants" };
+    if (/^restaurant$/i.test(t.trim())) {
+      return {
+        ok: false,
+        reason:
+          "Vertical 값이 restaurant(단수)입니다. 푸드는 restaurants(복수)만 사용합니다.",
+      };
+    }
     return {
       ok: false,
       reason:
-        "Vertical type(s) is Values(또는 한 줄 값)에는 shop 또는 restaurant만 단독으로 와야 합니다. 다른 값과 함께 올 수 없습니다.",
+        "Vertical type(s) is Values(또는 한 줄 값)에는 shop 또는 restaurants만 단독으로 와야 합니다. 다른 값과 함께 올 수 없습니다.",
     };
   }
 
-  function checkVerticalUnlabeledFallback(section, blocks) {
-    const shopLikeBlocks = blocks.filter((b) => {
-      const x = b.trim();
-      return /^shop$/i.test(x) || /^restaurant$/i.test(x);
-    });
+  function checkVerticalUnlabeledFallback(section, blocks, verticalSegment) {
+    const shopLikeBlocks = blocks.filter((b) => normalizeVerticalValueToken(b) != null);
     if (shopLikeBlocks.length !== 1) {
       return {
         ok: false,
         detail:
           shopLikeBlocks.length === 0
-            ? '"Vertical type(s)" 라벨이 innerText에 없고, shop/restaurant 전용 Values 블록도 없습니다.'
-            : `Vertical 라벨 없음: shop/restaurant Values가 ${shopLikeBlocks.length}개입니다. 정확히 1개여야 합니다.`,
+            ? '"Vertical type(s)" 라벨이 innerText에 없고, shop/restaurants 전용 Values 블록도 없습니다.'
+            : `Vertical 라벨 없음: shop/restaurants Values가 ${shopLikeBlocks.length}개입니다. 정확히 1개여야 합니다.`,
         clause: "unlabeled",
         verticalToken: null,
       };
@@ -451,11 +517,17 @@
       };
     }
     const want = strict.value.toLowerCase();
+    const exp = expectedVerticalToken(verticalSegment);
+    if (want !== exp) {
+      return {
+        ok: false,
+        detail: wrongVerticalForSegmentDetail(want, verticalSegment),
+        clause: "unlabeled",
+        verticalToken: want,
+      };
+    }
     const meta = extractValuesBlocksWithMeta(section);
-    const shopRow = meta.find(
-      (row) =>
-        /^shop$/i.test(row.inner.trim()) || /^restaurant$/i.test(row.inner.trim())
-    );
+    const shopRow = meta.find((row) => normalizeVerticalValueToken(row.inner) != null);
     const inferred = shopRow
       ? clauseOperatorNearestBefore(section, shopRow.openIndex)
       : null;
@@ -463,29 +535,27 @@
     if (effClause === "is_not") {
       return {
         ok: false,
-        detail:
-          want === "shop"
-            ? "Clause/Values UI에서 Vertical이 is not shop으로 보입니다. Bmart는 is shop만 허용됩니다."
-            : `Clause/Values UI에서 Vertical이 is not ${want}로 보입니다. Food는 is restaurant, Bmart는 is shop만 허용됩니다.`,
+        detail: verticalUnlabeledIsNotDetail(want, verticalSegment),
         clause: "is_not",
         verticalToken: want,
       };
     }
+    const lab = verticalSegmentLabelKo(verticalSegment);
     return {
       ok: true,
       detail:
         want === "shop"
-          ? "Clause/Values UI — Vertical 라벨이 텍스트에 없음, shop 단일 Values (is 로 간주)."
-          : `Clause/Values UI — Vertical 라벨이 텍스트에 없음, ${want} 단일 Values (is 로 간주).`,
+          ? `Clause/Values UI — Vertical 라벨 없음, shop 단일 Values (is, ${lab} 기준).`
+          : `Clause/Values UI — Vertical 라벨 없음, ${want} 단일 Values (is, ${lab} 기준).`,
       clause: "is",
       verticalToken: want,
     };
   }
 
-  function checkVerticalTypeStrict(section, blocks) {
+  function checkVerticalTypeStrict(section, blocks, verticalSegment) {
     const labeled = extractVerticalTypeValuesInner(section);
     if (labeled.mode === "none" && labeled.clause == null) {
-      return checkVerticalUnlabeledFallback(section, blocks);
+      return checkVerticalUnlabeledFallback(section, blocks, verticalSegment);
     }
 
     const { inner, mode, clause } = labeled;
@@ -503,14 +573,21 @@
       return { ok: false, detail: strict.reason, clause, verticalToken: null };
     }
     const want = strict.value.toLowerCase();
+    const exp = expectedVerticalToken(verticalSegment);
+    if (want !== exp) {
+      return {
+        ok: false,
+        detail: wrongVerticalForSegmentDetail(want, verticalSegment),
+        clause,
+        verticalToken: want,
+      };
+    }
 
-    const shopLikeBlocks = blocks.filter((b) => {
-      const x = b.trim();
-      return /^shop$/i.test(x) || /^restaurant$/i.test(x);
-    });
+    const shopLikeBlocks = blocks.filter((b) => normalizeVerticalValueToken(b) != null);
 
     for (const b of shopLikeBlocks) {
-      if (b.trim().toLowerCase() !== want) {
+      const bNorm = normalizeVerticalValueToken(b);
+      if (bNorm !== want) {
         return {
           ok: false,
           detail: `Vertical은 ${want}인데, 다른 Values 블록에 ${b.trim()}가 있습니다.`,
@@ -523,7 +600,7 @@
     if (shopLikeBlocks.length > 1) {
       return {
         ok: false,
-        detail: `shop/restaurant이 들어간 Values 블록이 ${shopLikeBlocks.length}개입니다.`,
+        detail: `shop 또는 restaurants가 들어간 Values 블록이 ${shopLikeBlocks.length}개입니다.`,
         clause,
         verticalToken: null,
       };
@@ -536,7 +613,7 @@
             ok: false,
             detail:
               shopLikeBlocks.length === 0
-                ? "Vertical type(s) is not Values 와 목록의 shop/restaurant 블록이 맞지 않습니다."
+                ? "Vertical type(s) is not Values 와 목록의 shop/restaurants 블록이 맞지 않습니다."
                 : "Vertical type(s) is not 에 해당하는 Values는 하나만 허용됩니다.",
             clause,
             verticalToken: null,
@@ -547,15 +624,12 @@
         return {
           ok: false,
           detail:
-            "Vertical type(s) is not 가 레거시인데 Clause/Values 에도 shop/restaurant 블록이 있습니다.",
+            "Vertical type(s) is not 가 레거시인데 Clause/Values 에도 shop/restaurants 블록이 있습니다.",
           clause,
           verticalToken: null,
         };
       }
-      const detail =
-        want === "shop"
-          ? "Vertical type(s)가 is not shop 입니다. Bmart는 is shop만 허용됩니다."
-          : `Vertical type(s)가 is not ${want} 입니다. Bmart는 is shop, Food는 is restaurant만 허용됩니다.`;
+      const detail = verticalIsNotFailDetail(want, verticalSegment);
       return { ok: false, detail, clause: "is_not", verticalToken: want };
     }
 
@@ -565,7 +639,7 @@
           ok: false,
           detail:
             shopLikeBlocks.length === 0
-              ? "Vertical type(s) is Values 텍스트는 있으나 Clause/Values 목록에서 shop/restaurant 블록을 찾지 못했습니다."
+              ? "Vertical type(s) is Values 텍스트는 있으나 Clause/Values 목록에서 shop/restaurants 블록을 찾지 못했습니다."
               : "Vertical type(s) is 에 해당하는 Values는 하나만 있어야 합니다.",
           clause,
           verticalToken: null,
@@ -577,20 +651,21 @@
       return {
         ok: false,
         detail:
-          "Vertical type(s) is 는 레거시 한 줄인데, Clause/Values 블록에도 shop/restaurant가 있습니다.",
+          "Vertical type(s) is 는 레거시 한 줄인데, Clause/Values 블록에도 shop/restaurants가 있습니다.",
         clause,
         verticalToken: null,
       };
     }
 
+    const lab = verticalSegmentLabelKo(verticalSegment);
     const detail =
       want === "shop"
         ? mode === "values"
-          ? "Vertical type(s) is — Values에 shop만 있고, 다른 Values 블록에는 vertical 값이 없습니다."
-          : "Vertical type(s) is shop 확인됨 (레거시 UI)."
+          ? `Vertical type(s) is — Values에 shop만 있고, 다른 Values 블록에는 vertical 값이 없습니다. (${lab} 기준)`
+          : `Vertical type(s) is shop 확인됨 (레거시 UI, ${lab} 기준).`
         : mode === "values"
-          ? `Vertical type(s) is — Values에 ${want}만 있고, 다른 Values 블록에는 vertical 값이 없습니다.`
-          : `Vertical type(s) is ${want} 확인됨 (레거시 UI).`;
+          ? `Vertical type(s) is — Values에 ${want}만 있고, 다른 Values 블록에는 vertical 값이 없습니다. (${lab} 기준)`
+          : `Vertical type(s) is ${want} 확인됨 (레거시 UI, ${lab} 기준).`;
 
     return { ok: true, detail, clause: "is", verticalToken: want };
   }
@@ -636,14 +711,17 @@
 
   /**
    * Vendor group filters 이하 텍스트에 대한 검증 묶음.
+   * @param {{ verticalSegment?: string }} [options]
    */
-  function validateVendorGroupFilters(iframeText) {
+  function validateVendorGroupFilters(iframeText, options) {
+    const verticalSegment = normalizeVerticalSegment(options?.verticalSegment);
     const t = iframeText || "";
     if (!t.trim()) {
       return {
         ok: false,
         checks: null,
         detail: "iframe 본문 텍스트가 비어 있습니다.",
+        verticalSegment,
       };
     }
     const section = sliceVendorGroupFiltersSection(t);
@@ -652,13 +730,14 @@
         ok: false,
         checks: null,
         detail: '화면에 "Vendor group filters" 문구가 없습니다.',
+        verticalSegment,
       };
     }
 
     const blocks = extractValuesBlockContents(section);
     const vendorIds = checkVendorIdsStrict(section, blocks);
 
-    const verticalCheck = checkVerticalTypeStrict(section, blocks);
+    const verticalCheck = checkVerticalTypeStrict(section, blocks, verticalSegment);
     const verticalOk = verticalCheck.ok;
     const verticalDetail = verticalCheck.detail;
 
@@ -693,7 +772,7 @@
       checks.deliveryTypesPlatform.detail,
     ].join(" | ");
 
-    return { ok, checks, detail };
+    return { ok, checks, detail, verticalSegment };
   }
 
   function normalizedHash() {
@@ -741,15 +820,19 @@
     return { ok: true, text: d.body.innerText || "" };
   }
 
-  function getIframeRouteExperimentId() {
+  function getIframeLocationHref() {
     const f = document.querySelector("iframe.pluginIframe");
-    if (!f?.contentWindow) return null;
-    let href = "";
+    if (!f?.contentWindow) return "";
     try {
-      href = f.contentWindow.location.href || "";
+      return f.contentWindow.location.href || "";
     } catch {
-      return null;
+      return "";
     }
+  }
+
+  function getIframeRouteExperimentId() {
+    const href = getIframeLocationHref();
+    if (!href) return null;
     const m = href.match(/automatic-assignment\/(\d+)\/edit(?:[?#]|$)/i);
     return m ? m[1] : null;
   }
@@ -758,14 +841,111 @@
     return getIframeRouteExperimentId() === String(experimentId);
   }
 
-  function navIframeToEdit(experimentId) {
+  function iframeHashNormalized() {
+    const href = getIframeLocationHref();
+    if (!href) return "";
+    try {
+      const u = new URL(href);
+      return (u.hash || "").split("?")[0].replace(/\/$/, "").toLowerCase();
+    } catch {
+      return "";
+    }
+  }
+
+  /** iframe 해시가 정확히 automatic-assignment 목록(하위 /id/edit 없음)인지 */
+  function iframeIsCommerceListRoute() {
+    const base = COMMERCE_HASH_PREFIX.replace(/\/$/, "").toLowerCase();
+    return iframeHashNormalized() === base;
+  }
+
+  function syncTopLocationToList() {
+    const hash = COMMERCE_HASH_PREFIX;
+    const path = window.location.pathname.split("?")[0];
+    const next = `${window.location.origin}${path}${hash}`;
+    try {
+      history.replaceState(null, "", next);
+    } catch {
+      window.location.hash = hash;
+    }
+  }
+
+  async function waitUntilIframeListOrTimeout() {
+    const deadline = Date.now() + LIST_ROUTE_WAIT_MS;
+    while (Date.now() < deadline) {
+      if (iframeIsCommerceListRoute()) return true;
+      await sleep(LIST_ROUTE_POLL_MS);
+    }
+    return false;
+  }
+
+  /** 상단 edit 해시 + iframe replace(edit) 만 (v0.5 — src/reload 없음) */
+  function navIframeToExperimentEditReplace(f, experimentId) {
     const id = String(experimentId);
-    const hash = `#/automatic-assignment/${id}/edit`;
+    const editUrl = `${ORIGIN}${BASE_PATH}#/automatic-assignment/${id}/edit`;
+    syncTopLocationToEdit(id);
+    try {
+      f.contentWindow.location.replace(editUrl);
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: `iframe edit nav: ${e}` };
+    }
+  }
+
+  /**
+   * 목록 replace 가 SPA 에서 무시될 때: iframe 문서를 비운 뒤 목록→edit 재진입.
+   */
+  async function hardResetIframeNavToListThenEdit(experimentId) {
+    const id = String(experimentId);
+    const f = document.querySelector("iframe.pluginIframe");
+    if (!f?.contentWindow) return { ok: false, error: "no iframe.pluginIframe" };
+    const listUrl = `${ORIGIN}${BASE_PATH}${COMMERCE_HASH_PREFIX}`;
+    try {
+      syncTopLocationToList();
+      f.contentWindow.location.replace("about:blank");
+      const blankDeadline = Date.now() + 5000;
+      while (Date.now() < blankDeadline) {
+        try {
+          if (f.contentWindow.location.href.startsWith("about:blank")) break;
+        } catch {
+          /* navigation in progress */
+        }
+        await sleep(50);
+      }
+      await sleep(80);
+      f.contentWindow.location.replace(listUrl);
+      const okList = await waitUntilIframeListOrTimeout();
+      if (!okList) {
+        return {
+          ok: false,
+          error:
+            "iframe 이 목록(#/automatic-assignment)으로 바뀌지 않습니다. about:blank 리셋 후에도 동일하면 포털·네트워크를 확인하세요.",
+        };
+      }
+      await sleep(LIST_STABILIZE_MS);
+      return navIframeToExperimentEditReplace(f, id);
+    } catch (e) {
+      return { ok: false, error: `hard iframe reset: ${e}` };
+    }
+  }
+
+  /**
+   * 상단·iframe 모두 목록으로 동기화 → iframe 해시가 목록인지 확인 → 상단·iframe edit.
+   * (상단을 먼저 edit 으로만 맞추면 호스트가 iframe 을 덮어써 replace 가 무시되는 경우가 있어 순서 조정.)
+   */
+  async function navIframeListThenEdit(experimentId) {
+    const id = String(experimentId);
     const f = document.querySelector("iframe.pluginIframe");
     if (!f || !f.contentWindow) return { ok: false, error: "no iframe.pluginIframe" };
+    const listUrl = `${ORIGIN}${BASE_PATH}${COMMERCE_HASH_PREFIX}`;
     try {
-      f.contentWindow.location.replace(`${ORIGIN}${BASE_PATH}${hash}`);
-      return { ok: true };
+      syncTopLocationToList();
+      f.contentWindow.location.replace(listUrl);
+      let okList = await waitUntilIframeListOrTimeout();
+      if (!okList) {
+        return await hardResetIframeNavToListThenEdit(id);
+      }
+      await sleep(LIST_STABILIZE_MS);
+      return navIframeToExperimentEditReplace(f, id);
     } catch (e) {
       return { ok: false, error: `iframe nav: ${e}` };
     }
@@ -787,16 +967,15 @@
     return new Promise((r) => setTimeout(r, ms));
   }
 
-  async function runVendorGroupFiltersCheckForExperiment(experimentId) {
+  async function runVendorGroupFiltersCheckForExperiment(experimentId, verticalSegment) {
     const id = String(experimentId);
-    syncTopLocationToEdit(id);
-    const navR = navIframeToEdit(id);
+    const navR = await navIframeListThenEdit(id);
     if (!navR.ok) throw new Error(navR.error);
 
     await sleep(NAV_SETTLE_MS);
 
     const deadline = Date.now() + MAX_MS;
-    let lastErr = "timeout waiting for target experiment in iframe";
+    let lastErr = "timeout: iframe edit URL 또는 Vendor group filters 대기";
     while (Date.now() < deadline) {
       if (!iframeShowsExperiment(experimentId)) {
         const cur = getIframeRouteExperimentId();
@@ -813,7 +992,12 @@
         await sleep(POLL_MS);
         continue;
       }
-      const v = validateVendorGroupFilters(body.text);
+      if (!VENDOR_GROUP_MARK.test(body.text)) {
+        lastErr = 'iframe innerText 에 "Vendor group filters" 가 아직 없습니다';
+        await sleep(POLL_MS);
+        continue;
+      }
+      const v = validateVendorGroupFilters(body.text, { verticalSegment });
       return {
         experimentId,
         ok: v.ok,
@@ -824,12 +1008,14 @@
     throw new Error(lastErr);
   }
 
-  async function runBatch(ids) {
+  async function runBatch(ids, verticalSegment) {
     /** @type {object[]} */
     const out = [];
-    for (const experimentId of ids) {
+    for (let i = 0; i < ids.length; i++) {
+      const experimentId = ids[i];
+      if (i > 0) await sleep(BETWEEN_EXPERIMENTS_MS);
       try {
-        out.push(await runVendorGroupFiltersCheckForExperiment(experimentId));
+        out.push(await runVendorGroupFiltersCheckForExperiment(experimentId, verticalSegment));
       } catch (e) {
         out.push({ experimentId, error: String(e.message || e) });
       }
@@ -845,10 +1031,15 @@
   }
 
   /** scripts/vendor-group-filters-logic.mjs `buildVendorGroupFiltersReportText` 와 동일 (동기화 필수) */
-  function buildReportText(results) {
+  function buildReportText(results, reportOpts) {
+    const seg = normalizeVerticalSegment(reportOpts?.verticalSegment);
+    const segLine =
+      seg === "food"
+        ? "(1) Vertical — 푸드 기준: is restaurants"
+        : "(1) Vertical — 커머스 기준: is shop";
     const lines = [];
     lines.push("=== 검증 항목 ===");
-    lines.push("(1) Vertical 설정이 올바르게 되어있는지 (Bmart: shop, Food: restaurant)");
+    lines.push(segLine);
     lines.push("(2) delivery type이 OD(PLATFORM_DELIVERY)로 설정되어 있는지");
     lines.push("(3) ASA ID별 vendor id 개수·목록");
     lines.push("");
@@ -893,7 +1084,17 @@
       `요약: 통과 ${pass} · 규칙 불통과 ${failRule} · 수집 실패 ${failTech} (총 ${results.length}건)`
     );
     lines.push("");
-    lines.push(JSON.stringify({ results, summary: { pass, failRule, failTech, total: results.length } }, null, 2));
+    lines.push(
+      JSON.stringify(
+        {
+          verticalSegment: seg,
+          results,
+          summary: { pass, failRule, failTech, total: results.length },
+        },
+        null,
+        2
+      )
+    );
     return lines.join("\n");
   }
 
@@ -923,14 +1124,29 @@
         <button type="button" class="dps-close" aria-label="닫기">×</button>
       </header>
       <div class="dps-body">
+        <p id="dps-commerce-segment-hint" class="dps-segment-hint">
+          검증 기준을 고르세요. <strong>커머스</strong>는 Vertical <code>shop</code>, <strong>푸드</strong>는 <code>restaurants</code>만 통과합니다.
+        </p>
+        <fieldset class="dps-vertical-field" aria-describedby="dps-commerce-segment-hint">
+          <legend>푸드 / 커머스 (택 1)</legend>
+          <label class="dps-radio-line">
+            <input type="radio" name="dps-vertical-segment" value="bmart" checked />
+            <span><strong>커머스</strong> (비마트) — Vertical type <code>is shop</code></span>
+          </label>
+          <label class="dps-radio-line">
+            <input type="radio" name="dps-vertical-segment" value="food" />
+            <span><strong>푸드</strong> — Vertical type <code>is restaurants</code> (단수 <code>restaurant</code> 미사용)</span>
+          </label>
+        </fieldset>
         <label class="dps-label" for="dps-commerce-ids-input">실험 ID (쉼표로 구분)</label>
         <textarea id="dps-commerce-ids-input" placeholder="예: 141, 142" spellcheck="false"></textarea>
         <div class="dps-meta">
           <strong>검증 항목 (Vendor Group Filters, iframe innerText)</strong>
           <ul>
-            <li><strong>Clause/Values UI</strong>: 첫 숫자-only <code>Values</code> 블록 → vendor id <strong>개수·목록</strong> (리포트에 쉼표 구분)</li>
-            <li>어느 <code>Values</code> 블록이든 내용이 <strong>shop</strong> 이면 Vertical 통과</li>
-            <li><strong>PLATFORM_DELIVERY</strong> 블록이 있으면 Delivery 통과 (레거시 영문 라벨 UI도 지원)</li>
+            <li><strong>실행 시</strong> 입력한 실험마다 iframe 을 목록(<code>#/automatic-assignment</code>)으로 보낸 뒤 해당 <code>…/edit</code> 로 열어, 항상 그 실험 화면을 읽습니다.</li>
+            <li><strong>Clause/Values UI</strong>: 첫 숫자-only <code>Values</code> 블록 → vendor id <strong>개수·목록</strong></li>
+            <li>위에서 고른 <strong>푸드 / 커머스</strong>에 맞춰 Vertical <code>Values</code>가 <strong>shop</strong>(커머스) 또는 <strong>restaurants</strong>(푸드)인지, <strong>is / is not</strong> 판별</li>
+            <li>Delivery: <strong>is PLATFORM_DELIVERY</strong> (is not 이면 NG)</li>
           </ul>
         </div>
         <div class="dps-actions">
@@ -946,6 +1162,39 @@
     const input = panel.querySelector("#dps-commerce-ids-input");
     const resultsEl = panel.querySelector("#dps-commerce-results");
     const completeBanner = panel.querySelector("#dps-commerce-complete-banner");
+    const verticalRadios = panel.querySelectorAll('input[name="dps-vertical-segment"]');
+
+    function readSelectedVerticalSegment() {
+      for (const r of verticalRadios) {
+        if (r.checked) return normalizeVerticalSegment(r.value);
+      }
+      return "bmart";
+    }
+
+    function persistVerticalSegment(seg) {
+      try {
+        localStorage.setItem(STORAGE_VERTICAL, normalizeVerticalSegment(seg));
+      } catch {
+        /* quota / private mode */
+      }
+    }
+
+    try {
+      const saved = localStorage.getItem(STORAGE_VERTICAL);
+      if (saved === "food" || saved === "bmart") {
+        for (const r of verticalRadios) {
+          r.checked = r.value === saved;
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+
+    for (const r of verticalRadios) {
+      r.addEventListener("change", () => {
+        if (r.checked) persistVerticalSegment(r.value);
+      });
+    }
 
     function openPanel() {
       if (!isCommerceExperimentsRoute()) {
@@ -989,9 +1238,11 @@
       runBtn.textContent = "실행 중…";
       let succeeded = false;
       try {
-        const batchResults = await runBatch(ids);
+        const verticalSegment = readSelectedVerticalSegment();
+        persistVerticalSegment(verticalSegment);
+        const batchResults = await runBatch(ids, verticalSegment);
         const pre = document.createElement("pre");
-        pre.textContent = buildReportText(batchResults);
+        pre.textContent = buildReportText(batchResults, { verticalSegment });
         resultsEl.appendChild(pre);
         resultsEl.classList.add("dps-visible");
         succeeded = true;
@@ -1011,7 +1262,8 @@
     panelWrap.appendChild(panel);
     root.appendChild(fab);
     root.appendChild(panelWrap);
-    document.documentElement.appendChild(root);
+    const mountParent = document.body || document.documentElement;
+    mountParent.appendChild(root);
 
     function syncFabVisibility() {
       fab.style.display = isCommerceExperimentsRoute() ? "block" : "none";
@@ -1027,19 +1279,24 @@
     window.addEventListener("popstate", onUserNavigation);
 
     function hookHistoryForFabSync() {
-      const notify = () => queueMicrotask(() => syncFabVisibility());
-      const origPush = history.pushState;
-      const origReplace = history.replaceState;
-      history.pushState = function (...args) {
-        const ret = origPush.apply(history, args);
-        notify();
-        return ret;
-      };
-      history.replaceState = function (...args) {
-        const ret = origReplace.apply(history, args);
-        notify();
-        return ret;
-      };
+      try {
+        const notify = () => queueMicrotask(() => syncFabVisibility());
+        const origPush = history.pushState;
+        const origReplace = history.replaceState;
+        if (typeof origPush !== "function" || typeof origReplace !== "function") return;
+        history.pushState = function (...args) {
+          const ret = origPush.apply(this, args);
+          notify();
+          return ret;
+        };
+        history.replaceState = function (...args) {
+          const ret = origReplace.apply(this, args);
+          notify();
+          return ret;
+        };
+      } catch (e) {
+        console.warn("[DPS 커머스 검증] history 후킹 생략:", e);
+      }
     }
     hookHistoryForFabSync();
 
@@ -1049,5 +1306,9 @@
     setTimeout(syncFabVisibility, 2000);
   }
 
-  ensureRoot();
+  try {
+    ensureRoot();
+  } catch (e) {
+    console.error("[DPS 커머스 검증] 초기화 실패:", e);
+  }
 })();
