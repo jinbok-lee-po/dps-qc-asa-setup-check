@@ -187,9 +187,61 @@ is
 PLATFORM_DELIVERY
 `;
 r = validateVendorGroupFilters(SHOP_NO_LABEL);
-assert(r.ok === false, "shop without Vertical type label");
-assert(r.checks.verticalTypeShop.ok === false, "vertical label required");
-console.log("OK: Vertical type 라벨 없이 shop 만 있으면 불통과(예상)");
+assert(r.ok === true, "shop without Vertical label: unlabeled fallback");
+assert(r.checks.verticalTypeShop.ok === true, "vertical unlabeled ok");
+assert(r.checks.verticalTypeShop.clause === "is", "vertical inferred is (no label)");
+console.log("OK: Vertical 라벨 없이 shop 단일 Values → is 로 간주해 통과");
+
+const MOCK_485 = `Vendor group filters
+Vendor ids
+is
+99999999
+99999998
+Vertical type
+is not
+shop
+Delivery types
+is not
+PLATFORM_DELIVERY
+`;
+r = validateVendorGroupFilters(MOCK_485);
+assert(r.ok === false, "485 is not vertical + delivery → 규칙 NG");
+assert(r.checks.verticalTypeShop.ok === false, "vertical NG");
+assert(r.checks.verticalTypeShop.clause === "is_not", "vertical clause is_not");
+assert(r.checks.deliveryTypesPlatform.ok === false, "delivery NG");
+assert(r.checks.deliveryTypesPlatform.clause === "is_not", "delivery clause is_not");
+console.log("OK: Vertical/Delivery is not (485 유형) 불통과(예상)");
+
+const UNLABELED_485_STYLE = `Vendor group filters
+Clause
+is
+Clause
+Values
+99999999
+99999998
+Values
+Clause
+is
+not
+Clause
+Values
+shop
+Values
+Clause
+is
+not
+Clause
+Values
+PLATFORM_DELIVERY
+Values
+`;
+r = validateVendorGroupFilters(UNLABELED_485_STYLE);
+assert(r.ok === false, "unlabeled innerText is not → 규칙 NG");
+assert(r.checks.verticalTypeShop.ok === false, "vertical NG inferred");
+assert(r.checks.verticalTypeShop.clause === "is_not", "vertical is_not inferred");
+assert(r.checks.deliveryTypesPlatform.ok === false, "delivery NG inferred");
+assert(r.checks.deliveryTypesPlatform.clause === "is_not", "delivery is_not inferred");
+console.log("OK: 라벨 없이 is/not 줄바꿈 (485 innerText 유사) → 불통과(예상)");
 
 {
   const v = validateVendorGroupFilters(PORTAL_CLAUSE_VALUES_SAMPLE);
