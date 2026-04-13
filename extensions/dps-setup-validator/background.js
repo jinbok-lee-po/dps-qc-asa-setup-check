@@ -1,12 +1,25 @@
 /**
  * DPS 커머스 검증: 부모 탭과 iframe 조작 없이
- * chrome.tabs.create 로 전체 edit URL 을 연 뒤, 각 탭의 content script 가 폴링·STEP_DONE.
+ * 첫 실험은 chrome.tabs.create, 이후 동일 worker 탭에 chrome.tabs.update 로 edit URL 만 전환.
+ * (탭이 닫혔으면 create 로 복구·workerTabId 갱신) content script 가 폴링·STEP_DONE.
  */
 const PORTAL_ORIGIN = "https://portal.woowahan.com";
 const PORTAL_BASE_PATH = "/pv2/kr/p/logistics-dynamic-pricing";
 
 function editUrlForExperiment(id) {
   return `${PORTAL_ORIGIN}${PORTAL_BASE_PATH}#/automatic-assignment/${id}/edit`;
+}
+
+/** tabs.update 직후 hashchange 가 없거나 늦을 때 content 가 자동 검증을 이어가도록 */
+function pingWorkerContentScript(tabId, experimentId, attempt = 0) {
+  if (tabId == null || experimentId == null) return;
+  const id = Number(experimentId);
+  if (!Number.isFinite(id)) return;
+  chrome.tabs.sendMessage(tabId, { type: "DPS_COMMERCE_WORKER_NAV", experimentId: id }, () => {
+    if (chrome.runtime.lastError && attempt < 12) {
+      setTimeout(() => pingWorkerContentScript(tabId, experimentId, attempt + 1), 200);
+    }
+  });
 }
 
 function finishRun(state, sendResponse) {
@@ -18,6 +31,96 @@ function finishRun(state, sendResponse) {
     chrome.storage.local.set({ dpsCommerceFinalResults: final }, () => {
       sendResponse({ ok: true });
     });
+  });
+}
+
+function persistWorkerTabIdAndRespond(tabId, sendResponse, ok, pingExperimentId) {
+  chrome.storage.local.get("dpsCommerceRunState", (d) => {
+    const s = d.dpsCommerceRunState;
+    if (s && Array.isArray(s.ids)) {
+      s.workerTabId = tabId ?? s.workerTabId;
+      chrome.storage.local.set({ dpsCommerceRunState: s }, () => {
+        if (ok) sendResponse({ ok: true, tabId });
+        if (pingExperimentId != null) pingWorkerContentScript(tabId, pingExperimentId);
+      });
+    } else if (ok) {
+      sendResponse({ ok: true, tabId });
+      if (pingExperimentId != null) pingWorkerContentScript(tabId, pingExperimentId);
+    }
+  });
+}
+
+/**
+ * 다음 실험 URL 로 이동. worker 탭이 있으면 update, 없거나 닫혔으면 create.
+ */
+function navigateWorkerToExperiment(nextId, state, sendResponse) {
+  const url = editUrlForExperiment(nextId);
+  const afterNavigateOk = (tabId) => {
+    sendResponse({ ok: true });
+    pingWorkerContentScript(tabId, nextId);
+  };
+  const failCreate = (msg) => {
+    chrome.storage.local.set(
+      {
+        dpsCommerceFinalResults: {
+          results: state.results,
+          verticalSegment: state.verticalSegment,
+          runError: msg,
+        },
+      },
+      () => {
+        chrome.storage.local.remove("dpsCommerceRunState", () => {
+          sendResponse({ ok: false, error: msg });
+        });
+      }
+    );
+  };
+
+  const afterTabReady = (tabId) => {
+    if (tabId == null) {
+      failCreate("탭 id 없음");
+      return;
+    }
+    chrome.tabs.update(tabId, { url, active: true }, () => {
+      if (chrome.runtime.lastError) {
+        const msg = chrome.runtime.lastError.message;
+        chrome.tabs.create({ url, active: true }, (tab) => {
+          if (chrome.runtime.lastError) {
+            failCreate(chrome.runtime.lastError.message || msg);
+            return;
+          }
+          persistWorkerTabIdAndRespond(tab?.id, sendResponse, true, nextId);
+        });
+        return;
+      }
+      afterNavigateOk(tabId);
+    });
+  };
+
+  const wid = state.workerTabId;
+  if (wid == null) {
+    chrome.tabs.create({ url, active: true }, (tab) => {
+      if (chrome.runtime.lastError) {
+        failCreate(chrome.runtime.lastError.message);
+        return;
+      }
+      persistWorkerTabIdAndRespond(tab?.id, sendResponse, true, nextId);
+    });
+    return;
+  }
+
+  chrome.tabs.get(wid, (tab) => {
+    if (chrome.runtime.lastError || !tab) {
+      chrome.tabs.create({ url, active: true }, (tab) => {
+        if (chrome.runtime.lastError) {
+          failCreate(chrome.runtime.lastError.message);
+          return;
+        }
+        persistWorkerTabIdAndRespond(tab?.id, sendResponse, true, nextId);
+      });
+      return;
+    }
+    afterTabReady(wid);
   });
 }
 
@@ -42,6 +145,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         index: 0,
         results: [],
         openerTabId: openerTabId ?? null,
+        workerTabId: null,
       };
       chrome.storage.local.set({ dpsCommerceRunState: state }, () => {
         chrome.tabs.create({ url: editUrlForExperiment(ids[0]), active: true }, (tab) => {
@@ -52,7 +156,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             });
             return;
           }
-          sendResponse({ ok: true, tabId: tab?.id });
+          persistWorkerTabIdAndRespond(tab?.id, sendResponse, true, ids[0]);
         });
       });
     })();
@@ -88,27 +192,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       const nextId = state.ids[state.index];
       chrome.storage.local.set({ dpsCommerceRunState: state }, () => {
-        chrome.tabs.create({ url: editUrlForExperiment(nextId), active: true }, () => {
-          if (chrome.runtime.lastError) {
-            const msg = chrome.runtime.lastError.message;
-            chrome.storage.local.set(
-              {
-                dpsCommerceFinalResults: {
-                  results: state.results,
-                  verticalSegment: state.verticalSegment,
-                  runError: msg,
-                },
-              },
-              () => {
-                chrome.storage.local.remove("dpsCommerceRunState", () => {
-                  sendResponse({ ok: false, error: msg });
-                });
-              }
-            );
-            return;
-          }
-          sendResponse({ ok: true });
-        });
+        navigateWorkerToExperiment(nextId, state, sendResponse);
       });
     });
     })();

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "DPS 커머스 운영안 검증",
-  "version": "0.6.2",
+  "version": "0.6.4",
   "description": "Woowa Portal DPS 커머스 automatic-assignment — Vendor group filters (Vertical type, Vendor ids, Delivery types) 검증.",
   "permissions": ["storage", "tabs"],
   "host_permissions": ["https://portal.woowahan.com/*"],

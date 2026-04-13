@@ -1,17 +1,19 @@
 (() => {
   /**
-   * 네비: 부모·iframe 을 조작하지 않음. background 가 chrome.tabs.create 로 전체 edit URL 을 연 새 탭에서만 폴링.
+   * 네비: 부모·iframe 을 조작하지 않음. background 가 worker 탭을 연 뒤(첫 번만 create) 이후는 tabs.update 로 edit URL 만 바꿈.
    * (CDP 스크립트 run-vendor-group-cdp.mjs 는 별도)
    *
-   * - 실행 시 background 가 첫 실험 edit URL 로 새 탭을 연다(주소창에 전체 URL 입력과 동일한 로드).
-   * - 여러 ID 이면 각 실험마다 순서대로 또 새 탭.
-   * - 새 탭에서 NEW_TAB_POST_LOAD_WAIT_MS 대기 후 iframe innerText 폴링 → STEP_DONE.
+   * - 실행 시 background 가 첫 실험 edit URL 로 새 탭을 연다. 여러 ID 면 같은 탭에서 URL 만 순서대로 전환.
+   * - 해시·history·background ping 시 dpsAutoRunConsumed 해제(상단 또는 iframe 이 대기 id 와 맞을 때도 해제).
+   * - 첫 실험만 긴 post-load 대기, 이후 단계는 짧은 대기 후 iframe innerText 폴링 → STEP_DONE.
    * - 최종 결과는 chrome.storage 로 실행을 눌렀던 탭 패널에 표시.
    */
-  const VERSION = "0.6.2";
+  const VERSION = "0.6.4";
   const POLL_MS = 600;
   const MAX_MS = 45000;
-  const NEW_TAB_POST_LOAD_WAIT_MS = 7000;
+  /** 첫 worker 로드(콜드 스타트) — 이후 단계는 SPA 전환만 있어 더 짧게 */
+  const FIRST_POST_LOAD_WAIT_MS = 7000;
+  const NEXT_POST_LOAD_WAIT_MS = 2500;
   /** 새 탭에서 상단 URL·iframe 이 edit 와 맞을 때까지 (SPA·replaceState 지연) */
   const ROUTE_ALIGN_WAIT_MS = 45000;
   const ROUTE_ALIGN_POLL_MS = 250;
@@ -889,10 +891,12 @@
    * 새 탭 전용: 네비 없이(이미 전체 URL 로 열림) 대기 후 iframe 폴링.
    * 상단 URL 이 이미 해당 실험 edit 이면 iframe location 이 잠깐 null 이어도 본문+Vendor mark 로 진행 (포털 SPA 특성).
    */
-  async function pollVendorGroupFiltersInCurrentTab(experimentId, verticalSegment) {
+  async function pollVendorGroupFiltersInCurrentTab(experimentId, verticalSegment, postLoadMs) {
     const id = String(experimentId);
     const seg = normalizeVerticalSegment(verticalSegment);
-    await sleep(NEW_TAB_POST_LOAD_WAIT_MS);
+    const wait0 =
+      typeof postLoadMs === "number" && postLoadMs >= 0 ? postLoadMs : FIRST_POST_LOAD_WAIT_MS;
+    await sleep(wait0);
 
     const deadline = Date.now() + MAX_MS;
     let lastErr = "timeout: iframe edit URL 또는 Vendor group filters 대기";
@@ -978,8 +982,9 @@
       dpsAutoRunConsumed = true;
 
       const seg = normalizeVerticalSegment(state.verticalSegment);
+      const postLoadMs = state.index === 0 ? FIRST_POST_LOAD_WAIT_MS : NEXT_POST_LOAD_WAIT_MS;
       try {
-        const result = await pollVendorGroupFiltersInCurrentTab(Number(expectId), seg);
+        const result = await pollVendorGroupFiltersInCurrentTab(Number(expectId), seg, postLoadMs);
         await sendMessageToBackgroundReliable({
           type: "DPS_COMMERCE_STEP_DONE",
           payload: { ok: true, result },
@@ -999,6 +1004,33 @@
       dpsAutoRunLock = false;
     }
   }
+
+  /** hash·history 변화 후: 같은 탭에서 다음 실험 URL 로 바뀌면 consumed 해제하고 자동 검증 재개 */
+  function scheduleCommerceAutoRun() {
+    queueMicrotask(() => {
+      (async () => {
+        if (!dpsAutoRunLock) {
+          const { dpsCommerceRunState: state } = await chrome.storage.local.get("dpsCommerceRunState");
+          if (state?.ids?.length && state.index < state.ids.length) {
+            const exp = String(state.ids[state.index]);
+            if (routeAlignedForExperiment(exp)) dpsAutoRunConsumed = false;
+          }
+        }
+        await tryAutoRunFromQueuedNewTab();
+      })().catch((err) => {
+        console.warn("[DPS 커머스 검증] 자동 검증:", err);
+      });
+    });
+  }
+
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message?.type === "DPS_COMMERCE_WORKER_NAV") {
+      dpsAutoRunConsumed = false;
+      scheduleCommerceAutoRun();
+      sendResponse({ ok: true });
+      return;
+    }
+  });
 
   function verticalReportValue(verticalCheck) {
     if (!verticalCheck.ok) return verticalCheck.detail || "NG";
@@ -1120,7 +1152,7 @@
         <div class="dps-meta">
           <strong>검증 항목 (Vendor Group Filters, iframe innerText)</strong>
           <ul>
-            <li><strong>실행 시</strong> 부모 창·iframe 은 건드리지 않고, <strong>새 탭</strong>에 전체 edit URL(<code>https://portal…/logistics-dynamic-pricing#/automatic-assignment/…/edit</code>)로 엽니다. 여러 ID면 실험마다 순서대로 새 탭이 열립니다. 각 탭에서 약 <strong>7초</strong> 후 iframe 텍스트를 읽고, 결과는 <strong>이 탭 패널</strong>에 모입니다.</li>
+            <li><strong>실행 시</strong> 부모 창·iframe 은 건드리지 않고, <strong>새 탭 하나</strong>에 첫 실험 edit URL 을 연 뒤, 여러 ID면 <strong>그 탭에서 주소만</strong> 다음 실험으로 바꿉니다(탭이 닫혔을 때만 새 탭). 첫 실험은 약 <strong>7초</strong>·이후 단계는 약 <strong>2.5초</strong> 대기 후 iframe 을 읽습니다. 결과는 <strong>이 탭 패널</strong>에 모입니다.</li>
             <li><strong>Clause/Values UI</strong>: 첫 숫자-only <code>Values</code> 블록 → vendor id <strong>개수·목록</strong></li>
             <li>위에서 고른 <strong>푸드 / 커머스</strong>에 맞춰 Vertical <code>Values</code>가 <strong>shop</strong>(커머스) 또는 <strong>restaurants</strong>(푸드)인지, <strong>is / is not</strong> 판별</li>
             <li>Delivery: <strong>is PLATFORM_DELIVERY</strong> (is not 이면 NG)</li>
@@ -1312,11 +1344,7 @@
     }
 
     function scheduleTryAutoRun() {
-      queueMicrotask(() => {
-        tryAutoRunFromQueuedNewTab().catch((err) => {
-          console.warn("[DPS 커머스 검증] 새 탭 자동 검증:", err);
-        });
-      });
+      scheduleCommerceAutoRun();
     }
 
     function onUserNavigation() {
@@ -1334,7 +1362,7 @@
         const notify = () =>
           queueMicrotask(() => {
             syncFabVisibility();
-            scheduleTryAutoRun();
+            scheduleCommerceAutoRun();
           });
         const origPush = history.pushState;
         const origReplace = history.replaceState;
@@ -1363,11 +1391,7 @@
 
   try {
     ensureRoot();
-    queueMicrotask(() => {
-      tryAutoRunFromQueuedNewTab().catch((err) => {
-        console.warn("[DPS 커머스 검증] 새 탭 자동 검증:", err);
-      });
-    });
+    scheduleCommerceAutoRun();
   } catch (e) {
     console.error("[DPS 커머스 검증] 초기화 실패:", e);
   }
