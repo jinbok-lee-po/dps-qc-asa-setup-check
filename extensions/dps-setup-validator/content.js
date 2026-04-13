@@ -1,5 +1,5 @@
 (() => {
-  const VERSION = "0.2.0";
+  const VERSION = "0.3.0";
   const POLL_MS = 600;
   const MAX_MS = 45000;
   const NAV_SETTLE_MS = 400;
@@ -7,12 +7,98 @@
   const ORIGIN = "https://portal.woowahan.com";
   const COMMERCE_HASH_PREFIX = "#/automatic-assignment";
 
-  /**
-   * Vendor group filters 영역에서 Vertical type · is · shop 이 한 필터로 이어지는지 본다.
-   * (iframe innerText 기준, 대소문자 무시. shop 은 단어 단위로만 매칭)
-   */
   const VENDOR_GROUP_MARK = /vendor\s+group\s+filters/i;
   const VERTICAL_TYPE_IS_SHOP = /vertical\s*type[\s\S]{0,500}?\bis\b[\s\S]{0,240}?\bshop\b/i;
+  const DELIVERY_TYPES_IS_PLATFORM = /delivery\s*types[\s\S]{0,400}?\bis\b[\s\S]{0,320}?\bPLATFORM_DELIVERY\b/i;
+  /** Vendor ids … is 다음 값 덩어리 끝: 다음 필터 라벨 또는 섹션 시작 전까지 */
+  const NEXT_FILTER_AFTER_VALUE = /\n\s*(?:Delivery types|Vertical type|Vendor ids|Add filter)\b/i;
+
+  function sliceVendorGroupFiltersSection(fullText) {
+    const t = fullText || "";
+    const m = t.match(VENDOR_GROUP_MARK);
+    if (!m || m.index == null) return null;
+    return t.slice(m.index);
+  }
+
+  /**
+   * "Vendor ids" … "is" 직후부터 다음 필터 라벨 전까지 잘라 셈한다.
+   * 쉼표·줄바꿈으로 구분된 비어 있지 않은 토큰 수 = vendor id 그룹(항목) 개수로 본다.
+   */
+  function parseVendorIdsCountAfterIs(fromVendorGroupFilters) {
+    const re = /vendor\s*ids[\s\S]{0,400}?\bis\b/i;
+    const m = fromVendorGroupFilters.match(re);
+    if (!m || m.index == null) {
+      return { ok: false, count: null, detail: '"Vendor ids" · "is" 패턴을 찾지 못했습니다.' };
+    }
+    const afterIs = fromVendorGroupFilters.slice(m.index + m[0].length);
+    const stop = afterIs.search(NEXT_FILTER_AFTER_VALUE);
+    const raw = (stop === -1 ? afterIs : afterIs.slice(0, stop)).trim();
+    if (!raw) {
+      return { ok: true, count: 0, detail: "Vendor ids is 다음에 값이 없습니다 (0개)." };
+    }
+    const parts = raw
+      .split(/[,\n]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    return {
+      ok: true,
+      count: parts.length,
+      detail: `Vendor ids is 다음 vendor id(그룹) 개수: ${parts.length}개`,
+    };
+  }
+
+  /**
+   * Vendor group filters 이하 텍스트에 대한 검증 묶음.
+   */
+  function validateVendorGroupFilters(iframeText) {
+    const t = iframeText || "";
+    if (!t.trim()) {
+      return {
+        ok: false,
+        checks: null,
+        detail: "iframe 본문 텍스트가 비어 있습니다.",
+      };
+    }
+    const section = sliceVendorGroupFiltersSection(t);
+    if (!section) {
+      return {
+        ok: false,
+        checks: null,
+        detail: '화면에 "Vendor group filters" 문구가 없습니다.',
+      };
+    }
+
+    const verticalOk = VERTICAL_TYPE_IS_SHOP.test(section);
+    const verticalDetail = verticalOk
+      ? "Vertical type is shop 확인됨."
+      : 'Vendor group filters 이후 "Vertical type" · "is" · "shop" 조합을 찾지 못했습니다.';
+
+    const vendorIds = parseVendorIdsCountAfterIs(section);
+
+    const deliveryOk = DELIVERY_TYPES_IS_PLATFORM.test(section);
+    const deliveryDetail = deliveryOk
+      ? 'Delivery types is PLATFORM_DELIVERY 확인됨.'
+      : 'Vendor group filters 이후 "Delivery types" · "is" · "PLATFORM_DELIVERY" 조합을 찾지 못했습니다.';
+
+    const ok = verticalOk && vendorIds.ok && deliveryOk;
+    const checks = {
+      verticalTypeShop: { ok: verticalOk, detail: verticalDetail },
+      vendorIds: {
+        ok: vendorIds.ok,
+        count: vendorIds.count,
+        detail: vendorIds.detail,
+      },
+      deliveryTypesPlatform: { ok: deliveryOk, detail: deliveryDetail },
+    };
+
+    const detail = [
+      checks.verticalTypeShop.detail,
+      checks.vendorIds.detail,
+      checks.deliveryTypesPlatform.detail,
+    ].join(" | ");
+
+    return { ok, checks, detail };
+  }
 
   function normalizedHash() {
     const raw = (window.location.hash || "").split("?")[0];
@@ -44,29 +130,6 @@
     }
     if (ids.length === 0) throw new Error("실험 ID를 하나 이상 입력하세요.");
     return [...new Set(ids)].sort((a, b) => a - b);
-  }
-
-  function validateVendorGroupVerticalTypeShop(iframeText) {
-    const t = iframeText || "";
-    if (!t.trim()) {
-      return { ok: false, detail: "iframe 본문 텍스트가 비어 있습니다." };
-    }
-    const m = t.match(VENDOR_GROUP_MARK);
-    if (!m || m.index == null) {
-      return {
-        ok: false,
-        detail: '화면에 "Vendor group filters" 문구가 없습니다.',
-      };
-    }
-    const fromMark = t.slice(m.index);
-    if (!VERTICAL_TYPE_IS_SHOP.test(fromMark)) {
-      return {
-        ok: false,
-        detail:
-          'Vendor group filters 이후 텍스트에서 "Vertical type" · "is" · "shop" 조합을 찾지 못했습니다. (연산자는 is, 값은 shop 단어)',
-      };
-    }
-    return { ok: true, detail: "Vertical type is shop 확인됨." };
   }
 
   function readIframeBodyText() {
@@ -128,7 +191,7 @@
     return new Promise((r) => setTimeout(r, ms));
   }
 
-  async function runVerticalTypeCheckForExperiment(experimentId) {
+  async function runVendorGroupFiltersCheckForExperiment(experimentId) {
     const id = String(experimentId);
     syncTopLocationToEdit(id);
     const navR = navIframeToEdit(id);
@@ -154,18 +217,23 @@
         await sleep(POLL_MS);
         continue;
       }
-      const v = validateVendorGroupVerticalTypeShop(body.text);
-      return { experimentId, ok: v.ok, detail: v.detail };
+      const v = validateVendorGroupFilters(body.text);
+      return {
+        experimentId,
+        ok: v.ok,
+        detail: v.detail,
+        checks: v.checks,
+      };
     }
     throw new Error(lastErr);
   }
 
   async function runBatch(ids) {
-    /** @type {{ experimentId: number, ok?: boolean, detail?: string, error?: string }[]} */
+    /** @type {object[]} */
     const out = [];
     for (const experimentId of ids) {
       try {
-        out.push(await runVerticalTypeCheckForExperiment(experimentId));
+        out.push(await runVendorGroupFiltersCheckForExperiment(experimentId));
       } catch (e) {
         out.push({ experimentId, error: String(e.message || e) });
       }
@@ -175,22 +243,36 @@
 
   function buildReportText(results) {
     const lines = [];
-    lines.push("=== Vendor group filters: Vertical type is shop ===");
+    lines.push("=== Vendor group filters 검증 ===");
+    lines.push("(1) Vertical type is shop  (2) Vendor ids is 이후 id 개수  (3) Delivery types is PLATFORM_DELIVERY");
     lines.push("");
     for (const r of results) {
       if (r.error) {
         lines.push(`${r.experimentId}\t실패: ${r.error}`);
-      } else if (r.ok) {
-        lines.push(`${r.experimentId}\t통과\t${r.detail}`);
-      } else {
-        lines.push(`${r.experimentId}\t불통과\t${r.detail}`);
+        continue;
       }
+      const st = r.ok ? "통과" : "불통과";
+      lines.push(`${r.experimentId}\t${st}\t${r.detail}`);
+      if (r.checks) {
+        const c = r.checks;
+        lines.push(
+          `  · vertical\t${c.verticalTypeShop.ok ? "OK" : "NG"}\t${c.verticalTypeShop.detail}`
+        );
+        lines.push(
+          `  · vendorIds\t${c.vendorIds.ok ? "OK" : "NG"}\t${c.vendorIds.detail}`
+        );
+        lines.push(
+          `  · delivery\t${c.deliveryTypesPlatform.ok ? "OK" : "NG"}\t${c.deliveryTypesPlatform.detail}`
+        );
+      }
+      lines.push("");
     }
     const pass = results.filter((x) => x.ok === true).length;
     const failRule = results.filter((x) => x.ok === false && !x.error).length;
     const failTech = results.filter((x) => x.error).length;
-    lines.push("");
-    lines.push(`요약: 통과 ${pass} · 규칙 불통과 ${failRule} · 수집 실패 ${failTech} (총 ${results.length}건)`);
+    lines.push(
+      `요약: 통과 ${pass} · 규칙 불통과 ${failRule} · 수집 실패 ${failTech} (총 ${results.length}건)`
+    );
     lines.push("");
     lines.push(JSON.stringify({ results, summary: { pass, failRule, failTech, total: results.length } }, null, 2));
     return lines.join("\n");
@@ -225,9 +307,11 @@
         <label class="dps-label" for="dps-commerce-ids-input">실험 ID (쉼표로 구분)</label>
         <textarea id="dps-commerce-ids-input" placeholder="예: 141, 142" spellcheck="false"></textarea>
         <div class="dps-meta">
-          <strong>검증 항목</strong>
+          <strong>검증 항목 (Vendor group filters, iframe 텍스트 기준)</strong>
           <ul>
-            <li><strong>Vendor group filters</strong>에서 <strong>Vertical type</strong> · <strong>is</strong> · <strong>shop</strong> (iframe에 보이는 텍스트 기준)</li>
+            <li><strong>Vertical type</strong> · <strong>is</strong> · <strong>shop</strong></li>
+            <li><strong>Vendor ids</strong> · <strong>is</strong> 다음에 나오는 값을 쉼표·줄바꿈으로 나눈 <strong>개수</strong> (리포트에 표시)</li>
+            <li><strong>Delivery types</strong> · <strong>is</strong> · <strong>PLATFORM_DELIVERY</strong></li>
           </ul>
         </div>
         <div class="dps-actions">
