@@ -3,17 +3,17 @@
    * 네비: 부모·iframe 을 조작하지 않음. background 가 worker 탭을 연 뒤(첫 번만 create) 이후는 tabs.update 로 edit URL 만 바꿈.
    * (CDP 스크립트 run-vendor-group-cdp.mjs 는 별도)
    *
-   * - 실행 시 background 가 첫 실험 edit URL 로 새 탭을 연다. 여러 ID 면 같은 탭에서 URL 만 순서대로 전환.
+   * - 실행 시 background 가 첫 실험 edit URL 을 백그라운드 탭에서 연다(포그라운드 전환 없음). 여러 ID 면 그 탭에서 URL 만 순서대로 전환.
    * - 해시·history·background ping 시 dpsAutoRunConsumed 해제(상단 또는 iframe 이 대기 id 와 맞을 때도 해제).
    * - 첫 실험만 긴 post-load 대기, 이후 단계는 짧은 대기 후 iframe innerText 폴링 → STEP_DONE.
    * - 최종 결과는 chrome.storage 로 실행을 눌렀던 탭 패널에 표시.
    */
-  const VERSION = "0.6.4";
+  const VERSION = "0.6.5";
   const POLL_MS = 600;
   const MAX_MS = 45000;
   /** 첫 worker 로드(콜드 스타트) — 이후 단계는 SPA 전환만 있어 더 짧게 */
   const FIRST_POST_LOAD_WAIT_MS = 7000;
-  const NEXT_POST_LOAD_WAIT_MS = 2500;
+  const NEXT_POST_LOAD_WAIT_MS = 3500;
   /** 새 탭에서 상단 URL·iframe 이 edit 와 맞을 때까지 (SPA·replaceState 지연) */
   const ROUTE_ALIGN_WAIT_MS = 45000;
   const ROUTE_ALIGN_POLL_MS = 250;
@@ -1149,10 +1149,17 @@
         </fieldset>
         <label class="dps-label" for="dps-commerce-ids-input">실험 ID (쉼표로 구분)</label>
         <textarea id="dps-commerce-ids-input" placeholder="예: 141, 142" spellcheck="false"></textarea>
+        <div class="dps-commerce-caution" role="note" aria-label="유의사항">
+          <strong>유의사항</strong>
+          <p>
+            Chrome이 비활성 탭을 절전·스로틀하는 환경에서는, 드물게 로드가 느려질 수 있습니다.
+            그때는 <strong>백그라운드 worker 탭</strong>을 한 번만 앞으로 켜 두고 다시 시험해 보세요.
+          </p>
+        </div>
         <div class="dps-meta">
           <strong>검증 항목 (Vendor Group Filters, iframe innerText)</strong>
           <ul>
-            <li><strong>실행 시</strong> 부모 창·iframe 은 건드리지 않고, <strong>새 탭 하나</strong>에 첫 실험 edit URL 을 연 뒤, 여러 ID면 <strong>그 탭에서 주소만</strong> 다음 실험으로 바꿉니다(탭이 닫혔을 때만 새 탭). 첫 실험은 약 <strong>7초</strong>·이후 단계는 약 <strong>2.5초</strong> 대기 후 iframe 을 읽습니다. 결과는 <strong>이 탭 패널</strong>에 모입니다.</li>
+            <li><strong>실행 시</strong> 부모 창·iframe 은 건드리지 않고, <strong>백그라운드 탭 하나</strong>에서 첫 실험 edit URL 을 연 뒤(화면 전환 없음), 여러 ID면 <strong>그 탭에서 주소만</strong> 다음 실험으로 바꿉니다(탭이 닫혔을 때만 새 탭). 첫 실험은 약 <strong>7초</strong>·이후 단계는 약 <strong>3.5초</strong> 대기 후 iframe 을 읽습니다. 결과는 <strong>이 탭 패널</strong>에 모입니다.</li>
             <li><strong>Clause/Values UI</strong>: 첫 숫자-only <code>Values</code> 블록 → vendor id <strong>개수·목록</strong></li>
             <li>위에서 고른 <strong>푸드 / 커머스</strong>에 맞춰 Vertical <code>Values</code>가 <strong>shop</strong>(커머스) 또는 <strong>restaurants</strong>(푸드)인지, <strong>is / is not</strong> 판별</li>
             <li>Delivery: <strong>is PLATFORM_DELIVERY</strong> (is not 이면 NG)</li>
@@ -1252,7 +1259,7 @@
       }
 
       runBtn.disabled = true;
-      runBtn.textContent = "새 탭 열림…";
+      runBtn.textContent = "백그라운드 탭…";
       let succeeded = false;
 
       const verticalSegment = readSelectedVerticalSegment();
@@ -1295,12 +1302,12 @@
           throw new Error(startResp?.error || "새 탭을 열지 못했습니다.");
         }
 
-        runBtn.textContent = "검증 중(새 탭)…";
+        runBtn.textContent = "검증 중(백그라운드)…";
 
         const fin = await new Promise((resolve, reject) => {
           waitTimer = setTimeout(() => {
             cleanupWait();
-            reject(new Error("결과 대기 시간이 초과되었습니다. 새 탭이 모두 열렸는지 확인하세요."));
+            reject(new Error("결과 대기 시간이 초과되었습니다. 백그라운드 worker 탭이 열렸는지 확인하세요."));
           }, OPENER_WAIT_TOTAL_MS);
 
           storageListener = (changes, area) => {

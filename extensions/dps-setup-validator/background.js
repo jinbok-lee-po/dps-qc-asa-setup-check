@@ -1,6 +1,7 @@
 /**
  * DPS 커머스 검증: 부모 탭과 iframe 조작 없이
- * 첫 실험은 chrome.tabs.create, 이후 동일 worker 탭에 chrome.tabs.update 로 edit URL 만 전환.
+ * 첫 실험은 chrome.tabs.create(active:false), 이후 동일 worker 탭에 chrome.tabs.update 로 edit URL 만 전환.
+ * worker 탭은 포그라운드로 전환하지 않음(사용자는 실행을 누른 탭에 그대로).
  * (탭이 닫혔으면 create 로 복구·workerTabId 갱신) content script 가 폴링·STEP_DONE.
  */
 const PORTAL_ORIGIN = "https://portal.woowahan.com";
@@ -81,10 +82,10 @@ function navigateWorkerToExperiment(nextId, state, sendResponse) {
       failCreate("탭 id 없음");
       return;
     }
-    chrome.tabs.update(tabId, { url, active: true }, () => {
+    chrome.tabs.update(tabId, { url, active: false }, () => {
       if (chrome.runtime.lastError) {
         const msg = chrome.runtime.lastError.message;
-        chrome.tabs.create({ url, active: true }, (tab) => {
+        chrome.tabs.create({ url, active: false }, (tab) => {
           if (chrome.runtime.lastError) {
             failCreate(chrome.runtime.lastError.message || msg);
             return;
@@ -99,7 +100,7 @@ function navigateWorkerToExperiment(nextId, state, sendResponse) {
 
   const wid = state.workerTabId;
   if (wid == null) {
-    chrome.tabs.create({ url, active: true }, (tab) => {
+    chrome.tabs.create({ url, active: false }, (tab) => {
       if (chrome.runtime.lastError) {
         failCreate(chrome.runtime.lastError.message);
         return;
@@ -111,7 +112,7 @@ function navigateWorkerToExperiment(nextId, state, sendResponse) {
 
   chrome.tabs.get(wid, (tab) => {
     if (chrome.runtime.lastError || !tab) {
-      chrome.tabs.create({ url, active: true }, (tab) => {
+      chrome.tabs.create({ url, active: false }, (tab) => {
         if (chrome.runtime.lastError) {
           failCreate(chrome.runtime.lastError.message);
           return;
@@ -148,7 +149,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         workerTabId: null,
       };
       chrome.storage.local.set({ dpsCommerceRunState: state }, () => {
-        chrome.tabs.create({ url: editUrlForExperiment(ids[0]), active: true }, (tab) => {
+        chrome.tabs.create({ url: editUrlForExperiment(ids[0]), active: false }, (tab) => {
           if (chrome.runtime.lastError) {
             const msg = chrome.runtime.lastError.message;
             chrome.storage.local.remove("dpsCommerceRunState", () => {

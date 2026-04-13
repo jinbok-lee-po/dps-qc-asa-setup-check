@@ -184,6 +184,28 @@
   box-shadow: 0 0 0 3px rgba(13, 110, 253, 0.15);
 }
 
+#dps-commerce-validator-panel .dps-commerce-caution {
+  margin-top: 12px;
+  padding: 10px 12px;
+  background: #fff8e6;
+  border: 1px solid #f5d78e;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #664d03;
+}
+
+#dps-commerce-validator-panel .dps-commerce-caution strong:first-child {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 12px;
+  color: #856404;
+}
+
+#dps-commerce-validator-panel .dps-commerce-caution p {
+  margin: 0;
+}
+
 #dps-commerce-validator-panel .dps-meta {
   margin-top: 12px;
   padding: 10px 12px;
